@@ -1,0 +1,29 @@
+# GameTunnel Agent Configuration Example
+# Copy to agent.yaml and edit before running.
+
+agent:
+  # Unique identifier for this agent. Must match the id registered on the server.
+  id: "home-node-1"
+  # Base URL of the GameTunnel server REST API (no trailing slash).
+  server_url: "https://tunnel.example.com"
+  # Bearer token for authenticating with the server. Must match the token in
+  # the server's agents list for this agent id.
+  token: "REPLACE_WITH_AGENT_TOKEN"
+  # How often (in seconds) to send a heartbeat to the server and sync tunnels.
+  # Default: 10
+  heartbeat_interval_seconds: 10
+
+wireguard:
+  # WireGuard interface name on the agent host.
+  # Default: wg0
+  interface: "wg0"
+  # Agent's WireGuard private key (base64). Generate with: wg genkey
+  private_key: "REPLACE_WITH_AGENT_PRIVATE_KEY"
+  # The server's WireGuard endpoint (host:port). The server operator provides this.
+  server_endpoint: "1.2.3.4:51820"
+
+routing:
+  # Policy routing table number used for GRE return-path routes.
+  # Must not conflict with other tables on the host.
+  # Default: 200
+  return_table: 200
