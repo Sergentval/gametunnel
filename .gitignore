@@ -1,0 +1,12 @@
+# Binaries
+gametunnel-server
+gametunnel-agent
+*.exe
+/dist/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+server.yaml
+agent.yaml
+state.json
