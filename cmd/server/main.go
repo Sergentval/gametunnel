@@ -19,6 +19,7 @@ import (
 	"github.com/Sergentval/gametunnel/internal/config"
 	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/Sergentval/gametunnel/internal/netutil"
+	"github.com/Sergentval/gametunnel/internal/pelican"
 	"github.com/Sergentval/gametunnel/internal/routing"
 	"github.com/Sergentval/gametunnel/internal/state"
 	"github.com/Sergentval/gametunnel/internal/tproxy"
@@ -155,6 +156,48 @@ func main() {
 			}
 		}
 	}()
+
+	// ── Pelican watcher goroutine ────────────────────────────────────────────
+	if cfg.Pelican.Enabled {
+		pelicanClient := pelican.NewPelicanClient(cfg.Pelican.PanelURL, cfg.Pelican.APIKey)
+
+		// Resolve the default agent's WireGuard IP from the registry.
+		var agentIP net.IP
+		if a, ok := registry.GetAgent(cfg.Pelican.DefaultAgentID); ok {
+			agentIP = net.ParseIP(a.AssignedIP)
+		}
+
+		watcherCfg := pelican.WatcherConfig{
+			NodeID:         cfg.Pelican.NodeID,
+			DefaultAgentID: cfg.Pelican.DefaultAgentID,
+			AgentIP:        agentIP,
+			DefaultProto:   cfg.Pelican.DefaultProtocol,
+			PortProtocols:  cfg.Pelican.PortProtocols,
+		}
+		watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr)
+
+		go func() {
+			log.Printf("Pelican watcher started (node %d, interval %ds)",
+				cfg.Pelican.NodeID, cfg.Pelican.PollIntervalSeconds)
+
+			if err := watcher.Sync(); err != nil {
+				log.Printf("Pelican watcher: initial sync error: %v", err)
+			}
+
+			ticker := time.NewTicker(time.Duration(cfg.Pelican.PollIntervalSeconds) * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := watcher.Sync(); err != nil {
+						log.Printf("Pelican watcher: sync error: %v", err)
+					}
+				}
+			}
+		}()
+	}
 
 	// ── Start serving ────────────────────────────────────────────────────────
 	serverErr := make(chan error, 1)
