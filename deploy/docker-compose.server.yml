@@ -1,0 +1,20 @@
+services:
+  gametunnel-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./server.yaml:/etc/gametunnel/server.yaml:ro
+      - gametunnel-state:/var/lib/gametunnel
+      - /lib/modules:/lib/modules:ro
+    environment:
+      - CONFIG_PATH=/etc/gametunnel/server.yaml
+      - PUBLIC_IP=${PUBLIC_IP:-51.178.25.173}
+    restart: unless-stopped
+
+volumes:
+  gametunnel-state:

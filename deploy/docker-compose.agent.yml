@@ -1,0 +1,15 @@
+services:
+  gametunnel-agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.agent
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./agent.yaml:/etc/gametunnel/agent.yaml:ro
+      - /lib/modules:/lib/modules:ro
+    environment:
+      - CONFIG_PATH=/etc/gametunnel/agent.yaml
+    restart: unless-stopped
