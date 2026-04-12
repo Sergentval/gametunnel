@@ -174,7 +174,7 @@ func main() {
 			DefaultProto:   cfg.Pelican.DefaultProtocol,
 			PortProtocols:  cfg.Pelican.PortProtocols,
 		}
-		watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr)
+		watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr, store)
 
 		go func() {
 			log.Printf("Pelican watcher started (node %d, interval %ds)",

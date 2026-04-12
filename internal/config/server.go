@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"os"
@@ -132,9 +133,10 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 }
 
 // AgentByToken returns the AgentEntry whose Token matches, or nil if not found.
+// Uses constant-time comparison to prevent timing side-channel attacks.
 func (c *ServerConfig) AgentByToken(token string) *AgentEntry {
 	for i := range c.Agents {
-		if c.Agents[i].Token == token {
+		if subtle.ConstantTimeCompare([]byte(c.Agents[i].Token), []byte(token)) == 1 {
 			return &c.Agents[i]
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/state"
 	"github.com/Sergentval/gametunnel/internal/tunnel"
 )
 
@@ -37,14 +38,16 @@ type Watcher struct {
 	config    WatcherConfig
 	api       PelicanAPI
 	tunnelMgr *tunnel.Manager
+	store     *state.Store
 }
 
 // NewWatcher creates a new Watcher with the provided configuration and dependencies.
-func NewWatcher(cfg WatcherConfig, api PelicanAPI, tunnelMgr *tunnel.Manager) *Watcher {
+func NewWatcher(cfg WatcherConfig, api PelicanAPI, tunnelMgr *tunnel.Manager, store *state.Store) *Watcher {
 	return &Watcher{
 		config:    cfg,
 		api:       api,
 		tunnelMgr: tunnelMgr,
+		store:     store,
 	}
 }
 
@@ -109,10 +112,15 @@ func (w *Watcher) Sync() error {
 			PelicanServerID:     &serverID,
 		}
 
-		if _, err := w.tunnelMgr.Create(req); err != nil {
+		tun, err := w.tunnelMgr.Create(req)
+		if err != nil {
 			log.Printf("pelican watcher: create tunnel for port %d: %v", port, err)
 		} else {
 			log.Printf("pelican watcher: created tunnel for port %d (alloc %d, server %d)", port, allocID, serverID)
+			w.store.SetTunnel(&tun)
+			if flushErr := w.store.Flush(); flushErr != nil {
+				log.Printf("pelican watcher: flush state after create port %d: %v", port, flushErr)
+			}
 		}
 	}
 
@@ -123,6 +131,10 @@ func (w *Watcher) Sync() error {
 				log.Printf("pelican watcher: delete orphaned tunnel %s (port %d): %v", t.ID, port, err)
 			} else {
 				log.Printf("pelican watcher: removed orphaned tunnel for port %d", port)
+				w.store.DeleteTunnel(t.ID)
+				if flushErr := w.store.Flush(); flushErr != nil {
+					log.Printf("pelican watcher: flush state after delete port %d: %v", port, flushErr)
+				}
 			}
 		}
 	}

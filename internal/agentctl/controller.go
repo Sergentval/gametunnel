@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
@@ -28,8 +29,10 @@ type Controller struct {
 	localIP  net.IP
 	serverIP net.IP
 
-	activeTunnels map[string]models.Tunnel
-	stopCh        chan struct{}
+	activeTunnels  map[string]models.Tunnel
+	routeRefCount  int
+	stopCh         chan struct{}
+	loopWg         sync.WaitGroup
 }
 
 // NewController creates a Controller with the supplied dependencies.
@@ -96,6 +99,7 @@ func (c *Controller) Register(privateKey, serverEndpoint string) error {
 
 // Run starts the heartbeat/sync loop and blocks until Stop is called.
 func (c *Controller) Run() {
+	c.loopWg.Add(1)
 	c.runLoop()
 }
 
@@ -104,9 +108,16 @@ func (c *Controller) Stop() {
 	close(c.stopCh)
 }
 
+// Wait blocks until the run loop has fully exited. Call after Stop.
+func (c *Controller) Wait() {
+	c.loopWg.Wait()
+}
+
 // runLoop performs an initial heartbeat+sync then ticks at heartbeatSecs until
 // the stop channel is closed.
 func (c *Controller) runLoop() {
+	defer c.loopWg.Done()
+
 	c.heartbeatAndSync()
 
 	ticker := time.NewTicker(time.Duration(c.heartbeatSecs) * time.Second)
@@ -172,6 +183,7 @@ func (c *Controller) syncTunnels(serverTunnels []models.Tunnel) {
 }
 
 // createTunnel creates a GRE interface and installs the return route for a tunnel.
+// The shared return route is only added when the first tunnel is created (ref-count 0→1).
 func (c *Controller) createTunnel(t models.Tunnel) error {
 	greCfg := models.GREConfig{
 		Name:     t.GREInterface,
@@ -182,22 +194,31 @@ func (c *Controller) createTunnel(t models.Tunnel) error {
 		return fmt.Errorf("create gre interface %q: %w", t.GREInterface, err)
 	}
 
-	if err := c.routing.AddReturnRoute(c.returnTable, c.serverIP, t.GREInterface); err != nil {
-		return fmt.Errorf("add return route for %q: %w", t.GREInterface, err)
+	if c.routeRefCount == 0 {
+		if err := c.routing.AddReturnRoute(c.returnTable, c.serverIP, t.GREInterface); err != nil {
+			return fmt.Errorf("add return route for %q: %w", t.GREInterface, err)
+		}
 	}
+	c.routeRefCount++
 
 	log.Printf("tunnel %s (%s) created", t.Name, t.ID)
 	return nil
 }
 
-// removeTunnel removes the return route and deletes the GRE interface for a tunnel.
+// removeTunnel removes the GRE interface for a tunnel and, when it is the last
+// active tunnel, removes the shared return route.
 func (c *Controller) removeTunnel(t models.Tunnel) error {
-	if err := c.routing.RemoveReturnRoute(c.returnTable); err != nil {
-		log.Printf("remove return route for %q: %v", t.GREInterface, err)
-	}
-
 	if err := c.gre.DeleteTunnel(t.GREInterface); err != nil {
 		return fmt.Errorf("delete gre interface %q: %w", t.GREInterface, err)
+	}
+
+	if c.routeRefCount > 0 {
+		c.routeRefCount--
+	}
+	if c.routeRefCount == 0 {
+		if err := c.routing.RemoveReturnRoute(c.returnTable); err != nil {
+			log.Printf("remove return route: %v", err)
+		}
 	}
 
 	log.Printf("tunnel %s (%s) removed", t.Name, t.ID)

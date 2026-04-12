@@ -3,9 +3,11 @@ package pelican
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"testing"
 
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/state"
 	"github.com/Sergentval/gametunnel/internal/tunnel"
 )
 
@@ -97,6 +99,15 @@ func defaultWatcherConfig() WatcherConfig {
 	}
 }
 
+func newTestStore(t *testing.T) *state.Store {
+	t.Helper()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	return store
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestWatcher_Sync_CreateNew(t *testing.T) {
@@ -113,7 +124,7 @@ func TestWatcher_Sync_CreateNew(t *testing.T) {
 	cfg := defaultWatcherConfig()
 	cfg.PortProtocols = map[int]string{25565: "tcp"} // override to tcp for port 25565
 
-	watcher := NewWatcher(cfg, api, mgr)
+	watcher := NewWatcher(cfg, api, mgr, newTestStore(t))
 	if err := watcher.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -168,7 +179,7 @@ func TestWatcher_Sync_RemoveOrphaned(t *testing.T) {
 		allocServerMap: map[int]Server{},
 	}
 
-	watcher := NewWatcher(defaultWatcherConfig(), api, mgr)
+	watcher := NewWatcher(defaultWatcherConfig(), api, mgr, newTestStore(t))
 	if err := watcher.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -186,7 +197,7 @@ func TestWatcher_ProtocolMapping(t *testing.T) {
 	cfg.DefaultProto = "tcp"
 	cfg.PortProtocols = nil
 
-	watcher := NewWatcher(cfg, &mockPelicanAPI{}, mgr)
+	watcher := NewWatcher(cfg, &mockPelicanAPI{}, mgr, newTestStore(t))
 
 	if got := watcher.protocolFor(25565); got != models.ProtocolTCP {
 		t.Errorf("expected tcp (default), got %s", got)
@@ -194,7 +205,7 @@ func TestWatcher_ProtocolMapping(t *testing.T) {
 
 	// With a per-port override, the override wins.
 	cfg.PortProtocols = map[int]string{25565: "udp"}
-	watcher2 := NewWatcher(cfg, &mockPelicanAPI{}, mgr)
+	watcher2 := NewWatcher(cfg, &mockPelicanAPI{}, mgr, newTestStore(t))
 	if got := watcher2.protocolFor(25565); got != models.ProtocolUDP {
 		t.Errorf("expected udp (override), got %s", got)
 	}

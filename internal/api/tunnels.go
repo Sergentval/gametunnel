@@ -42,8 +42,8 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
-	if req.PublicPort == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "public_port is required"})
+	if req.PublicPort < 1 || req.PublicPort > 65535 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "public_port must be between 1 and 65535"})
 		return
 	}
 	if req.AgentID == "" {

@@ -105,6 +105,8 @@ func main() {
 	ctrl.Run()
 
 	// ── Cleanup ──────────────────────────────────────────────────────────────
+	// Wait for the run loop goroutine to fully exit before cleaning up state.
+	ctrl.Wait()
 	ctrl.Cleanup()
 	log.Printf("shutdown complete")
 }

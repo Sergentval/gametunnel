@@ -159,6 +159,7 @@ func (m *wireguardManager) Close() error {
 }
 
 // PublicKey returns the base64-encoded public key derived during Setup.
+// It returns an empty string if Setup has not yet been called.
 func (m *wireguardManager) PublicKey() string {
 	return m.publicKey
 }

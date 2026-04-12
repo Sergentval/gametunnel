@@ -72,7 +72,11 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 
 	// Determine a unique GRE interface name.
 	greName := models.SanitizeGREName(req.Name)
-	greName = m.resolveGRENameCollision(greName)
+	var nameErr error
+	greName, nameErr = m.resolveGRENameCollision(greName)
+	if nameErr != nil {
+		return models.Tunnel{}, nameErr
+	}
 
 	// Create the GRE interface.
 	greCfg := models.GREConfig{
@@ -111,14 +115,15 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	return t, nil
 }
 
-// resolveGRENameCollision appends a digit suffix until the name is unique.
+// resolveGRENameCollision appends a numeric suffix until the name is unique.
+// Returns an error if all candidates (2–99) are already taken.
 // Must be called with m.mu held.
-func (m *Manager) resolveGRENameCollision(name string) string {
+func (m *Manager) resolveGRENameCollision(name string) (string, error) {
 	exists, _ := m.gre.TunnelExists(name)
 	if !exists {
-		return name
+		return name, nil
 	}
-	for i := 1; i <= 9; i++ {
+	for i := 2; i <= 99; i++ {
 		candidate := name + fmt.Sprintf("%d", i)
 		// Truncate to 15 chars if needed.
 		if len(candidate) > 15 {
@@ -126,10 +131,10 @@ func (m *Manager) resolveGRENameCollision(name string) string {
 		}
 		exists, _ = m.gre.TunnelExists(candidate)
 		if !exists {
-			return candidate
+			return candidate, nil
 		}
 	}
-	return name
+	return "", fmt.Errorf("all GRE name candidates for %q are taken", name)
 }
 
 // Delete removes a tunnel by ID, cleaning up both the TPROXY rule and GRE interface.

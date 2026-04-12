@@ -94,14 +94,16 @@ func (c *PelicanClient) GetNodeAllocations(nodeID int) ([]Allocation, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get node %d allocations page %d: %w", nodeID, page, err)
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			return nil, fmt.Errorf("get node %d allocations: unexpected status %d", nodeID, resp.StatusCode)
 		}
 
 		var result allocationListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
 			return nil, fmt.Errorf("decode node %d allocations page %d: %w", nodeID, page, err)
 		}
 
@@ -129,14 +131,16 @@ func (c *PelicanClient) GetServers() ([]Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get servers page %d: %w", page, err)
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			return nil, fmt.Errorf("get servers: unexpected status %d", resp.StatusCode)
 		}
 
 		var result serverListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
 			return nil, fmt.Errorf("decode servers page %d: %w", page, err)
 		}
 
