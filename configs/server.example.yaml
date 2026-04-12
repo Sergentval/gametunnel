@@ -1,0 +1,54 @@
+# GameTunnel Server Configuration Example
+# Copy to server.yaml and edit before running.
+
+server:
+  # Address and port the REST API listens on.
+  api_listen: "0.0.0.0:8080"
+  # Path for persisting tunnel/agent state between restarts.
+  state_file: "/var/lib/gametunnel/state.json"
+
+# Registered agents. Each agent needs a unique id and a secret bearer token.
+# The agent uses its token when calling the server API.
+agents:
+  - id: "game-node-1"
+    token: "change-me-secret-token-1"
+  - id: "game-node-2"
+    token: "change-me-secret-token-2"
+
+wireguard:
+  # WireGuard interface name on the server.
+  interface: "wg0"
+  # UDP port WireGuard listens on.
+  listen_port: 51820
+  # Server's WireGuard private key (base64). Generate with: wg genkey
+  private_key: "REPLACE_WITH_SERVER_PRIVATE_KEY"
+  # Subnet for WireGuard peers (CIDR). Agents are assigned IPs from this range.
+  subnet: "10.100.0.0/24"
+
+tproxy:
+  # iptables fwmark used to identify TPROXY-redirected traffic.
+  mark: "0x1"
+  # Policy routing table number for return-path routes.
+  routing_table: 100
+
+pelican:
+  # Set to true to enable automatic tunnel sync from a Pelican panel.
+  enabled: false
+  # URL of the Pelican panel (no trailing slash).
+  panel_url: "https://panel.example.com"
+  # Pelican application API key.
+  api_key: "REPLACE_WITH_PELICAN_API_KEY"
+  # Pelican node ID that this server manages allocations for.
+  node_id: 1
+  # Default agent ID to assign Pelican-created tunnels to.
+  default_agent_id: "game-node-1"
+  # How to sync: "polling" (periodic) or "webhook" (Pelican pushes changes).
+  sync_mode: "polling"
+  # How often to poll Pelican for allocation changes (seconds). Only used with polling.
+  poll_interval_seconds: 30
+  # Default protocol for Pelican allocations that don't specify one.
+  default_protocol: "udp"
+  # Override protocol per port: port number → "tcp" or "udp".
+  port_protocols:
+    25565: "tcp"   # Minecraft Java
+    19132: "udp"   # Minecraft Bedrock

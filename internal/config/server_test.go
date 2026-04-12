@@ -1,0 +1,212 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// writeTemp writes content to a temp file and returns the path.
+func writeTemp(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "*.yaml")
+	if err != nil {
+		t.Fatalf("creating temp file: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+	f.Close()
+	return f.Name()
+}
+
+const validYAML = `
+server:
+  api_listen: "127.0.0.1:9090"
+  state_file: "/tmp/state.json"
+agents:
+  - id: "agent-1"
+    token: "secret-token-1"
+  - id: "agent-2"
+    token: "secret-token-2"
+wireguard:
+  interface: "wg1"
+  listen_port: 51821
+  private_key: "cHJpdmF0ZWtleWhlcmUK"
+  subnet: "10.99.0.0/24"
+tproxy:
+  mark: "0x2"
+  routing_table: 200
+pelican:
+  enabled: true
+  panel_url: "https://panel.example.com"
+  api_key: "pelican-key"
+  node_id: 7
+  default_agent_id: "agent-1"
+  sync_mode: "webhook"
+  poll_interval_seconds: 60
+  default_protocol: "tcp"
+  port_protocols:
+    25565: "tcp"
+    19132: "udp"
+`
+
+func TestLoadServerConfig_Valid(t *testing.T) {
+	path := writeTemp(t, validYAML)
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Server.APIListen != "127.0.0.1:9090" {
+		t.Errorf("APIListen = %q, want %q", cfg.Server.APIListen, "127.0.0.1:9090")
+	}
+	if cfg.Server.StateFile != "/tmp/state.json" {
+		t.Errorf("StateFile = %q, want %q", cfg.Server.StateFile, "/tmp/state.json")
+	}
+	if len(cfg.Agents) != 2 {
+		t.Errorf("len(Agents) = %d, want 2", len(cfg.Agents))
+	}
+	if cfg.WireGuard.PrivateKey != "cHJpdmF0ZWtleWhlcmUK" {
+		t.Errorf("PrivateKey = %q", cfg.WireGuard.PrivateKey)
+	}
+	if cfg.WireGuard.Subnet != "10.99.0.0/24" {
+		t.Errorf("Subnet = %q", cfg.WireGuard.Subnet)
+	}
+	if cfg.Pelican.Enabled != true {
+		t.Error("Pelican.Enabled should be true")
+	}
+	if cfg.Pelican.PortProtocols[25565] != "tcp" {
+		t.Errorf("PortProtocols[25565] = %q, want tcp", cfg.Pelican.PortProtocols[25565])
+	}
+}
+
+const minimalYAML = `
+agents:
+  - id: "agent-1"
+    token: "tok"
+wireguard:
+  private_key: "somekey"
+  subnet: "10.0.0.0/24"
+`
+
+func TestLoadServerConfig_Defaults(t *testing.T) {
+	path := writeTemp(t, minimalYAML)
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Server.APIListen != "0.0.0.0:8080" {
+		t.Errorf("default APIListen = %q, want 0.0.0.0:8080", cfg.Server.APIListen)
+	}
+	if cfg.Server.StateFile != "/var/lib/gametunnel/state.json" {
+		t.Errorf("default StateFile = %q", cfg.Server.StateFile)
+	}
+	if cfg.WireGuard.Interface != "wg0" {
+		t.Errorf("default Interface = %q, want wg0", cfg.WireGuard.Interface)
+	}
+	if cfg.WireGuard.ListenPort != 51820 {
+		t.Errorf("default ListenPort = %d, want 51820", cfg.WireGuard.ListenPort)
+	}
+	if cfg.TProxy.Mark != "0x1" {
+		t.Errorf("default Mark = %q, want 0x1", cfg.TProxy.Mark)
+	}
+	if cfg.TProxy.RoutingTable != 100 {
+		t.Errorf("default RoutingTable = %d, want 100", cfg.TProxy.RoutingTable)
+	}
+	if cfg.Pelican.SyncMode != "polling" {
+		t.Errorf("default SyncMode = %q, want polling", cfg.Pelican.SyncMode)
+	}
+	if cfg.Pelican.PollIntervalSeconds != 30 {
+		t.Errorf("default PollIntervalSeconds = %d, want 30", cfg.Pelican.PollIntervalSeconds)
+	}
+	if cfg.Pelican.DefaultProtocol != "udp" {
+		t.Errorf("default DefaultProtocol = %q, want udp", cfg.Pelican.DefaultProtocol)
+	}
+}
+
+func TestLoadServerConfig_MissingPrivateKey(t *testing.T) {
+	yaml := `
+agents:
+  - id: "agent-1"
+    token: "tok"
+wireguard:
+  subnet: "10.0.0.0/24"
+`
+	path := writeTemp(t, yaml)
+	_, err := LoadServerConfig(path)
+	if err == nil {
+		t.Fatal("expected error for missing private_key, got nil")
+	}
+}
+
+func TestLoadServerConfig_NoAgents(t *testing.T) {
+	yaml := `
+wireguard:
+  private_key: "somekey"
+  subnet: "10.0.0.0/24"
+`
+	path := writeTemp(t, yaml)
+	_, err := LoadServerConfig(path)
+	if err == nil {
+		t.Fatal("expected error for no agents, got nil")
+	}
+}
+
+func TestLoadServerConfig_FileNotFound(t *testing.T) {
+	_, err := LoadServerConfig(filepath.Join(t.TempDir(), "nonexistent.yaml"))
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestAgentByToken(t *testing.T) {
+	path := writeTemp(t, validYAML)
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	t.Run("found", func(t *testing.T) {
+		a := cfg.AgentByToken("secret-token-1")
+		if a == nil {
+			t.Fatal("expected agent, got nil")
+		}
+		if a.ID != "agent-1" {
+			t.Errorf("ID = %q, want agent-1", a.ID)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		a := cfg.AgentByToken("no-such-token")
+		if a != nil {
+			t.Errorf("expected nil, got %+v", a)
+		}
+	})
+}
+
+func TestAgentByID(t *testing.T) {
+	path := writeTemp(t, validYAML)
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	t.Run("found", func(t *testing.T) {
+		a := cfg.AgentByID("agent-2")
+		if a == nil {
+			t.Fatal("expected agent, got nil")
+		}
+		if a.Token != "secret-token-2" {
+			t.Errorf("Token = %q, want secret-token-2", a.Token)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		a := cfg.AgentByID("no-such-id")
+		if a != nil {
+			t.Errorf("expected nil, got %+v", a)
+		}
+	})
+}
