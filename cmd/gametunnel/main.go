@@ -17,6 +17,8 @@ func main() {
 		serverCmd(os.Args[2:])
 	case "agent":
 		agentCmd(os.Args[2:])
+	case "bench":
+		benchCmd(os.Args[2:])
 	case "version":
 		fmt.Printf("gametunnel %s\n", version)
 	case "help", "--help", "-h":
@@ -84,6 +86,10 @@ Usage:
   gametunnel agent <command>     Manage the tunnel agent (home server)
   gametunnel version             Show version
   gametunnel help                Show this help
+
+Benchmark:
+  bench server                   Start UDP echo server
+  bench client                   Measure UDP round-trip latency
 
 Server Commands:
   init                           Generate server config with auto WireGuard keys
