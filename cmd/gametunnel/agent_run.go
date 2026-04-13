@@ -92,7 +92,7 @@ func agentRun(args []string) {
 		if err == nil {
 			break
 		}
-		slog.Warn("registration failed, retrying in 5s", "error", err)
+		slog.Warn("registration failed, retrying", "error", err, "retry_in", "5s")
 		select {
 		case sig := <-quit:
 			slog.Info("received signal during registration, exiting", "signal", sig)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -41,32 +41,39 @@ func serverRun(args []string) {
 		}
 	}
 
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+
 	cfg, err := config.LoadServerConfig(configPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		slog.Error("load config", "error", err)
+		os.Exit(1)
 	}
 
 	// ── State store ─────────────────────────────────────────────────────────
 	store, err := state.NewStore(cfg.Server.StateFile)
 	if err != nil {
-		log.Fatalf("init state store: %v", err)
+		slog.Error("init state store", "error", err)
+		os.Exit(1)
 	}
 
 	// ── WireGuard ───────────────────────────────────────────────────────────
 	wgMgr, err := netutil.NewWireGuardManager()
 	if err != nil {
-		log.Fatalf("init wireguard manager: %v", err)
+		slog.Error("init wireguard manager", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := wgMgr.Close(); err != nil {
-			log.Printf("warning: close wireguard manager: %v", err)
+			slog.Warn("close wireguard manager", "error", err)
 		}
 	}()
 
 	// Derive server IP: first address in the WireGuard subnet (.1).
 	serverIP, err := subnetFirstIP(cfg.WireGuard.Subnet)
 	if err != nil {
-		log.Fatalf("derive server IP from subnet %q: %v", cfg.WireGuard.Subnet, err)
+		slog.Error("derive server IP from subnet", "subnet", cfg.WireGuard.Subnet, "error", err)
+		os.Exit(1)
 	}
 	serverIPWithMask := fmt.Sprintf("%s/%d", serverIP.String(), subnetPrefixLen(cfg.WireGuard.Subnet))
 
@@ -76,17 +83,20 @@ func serverRun(args []string) {
 		cfg.WireGuard.ListenPort,
 		serverIPWithMask,
 	); err != nil {
-		log.Fatalf("setup wireguard interface: %v", err)
+		slog.Error("setup wireguard interface", "error", err)
+		os.Exit(1)
 	}
 
 	// ── TPROXY routing ──────────────────────────────────────────────────────
 	mark, err := parseMark(cfg.TProxy.Mark)
 	if err != nil {
-		log.Fatalf("parse tproxy mark %q: %v", cfg.TProxy.Mark, err)
+		slog.Error("parse tproxy mark", "mark", cfg.TProxy.Mark, "error", err)
+		os.Exit(1)
 	}
 
 	if err := routing.EnsureTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
-		log.Fatalf("ensure tproxy routing: %v", err)
+		slog.Error("ensure tproxy routing", "error", err)
+		os.Exit(1)
 	}
 
 	// ── GRE + TPROXY managers ───────────────────────────────────────────────
@@ -94,7 +104,8 @@ func serverRun(args []string) {
 
 	tproxyMgr, err := tproxy.NewManager()
 	if err != nil {
-		log.Fatalf("init tproxy manager: %v", err)
+		slog.Error("init tproxy manager", "error", err)
+		os.Exit(1)
 	}
 
 	tunnelMgr := tunnel.NewManager(greMgr, tproxyMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP)
@@ -108,7 +119,8 @@ func serverRun(args []string) {
 
 	registry, err := agent.NewRegistry(wgMgr, cfg.WireGuard.Interface, cfg.WireGuard.Subnet, serverEndpoint)
 	if err != nil {
-		log.Fatalf("init agent registry: %v", err)
+		slog.Error("init agent registry", "error", err)
+		os.Exit(1)
 	}
 
 	// ── Restore persisted state ─────────────────────────────────────────────
@@ -134,7 +146,7 @@ func serverRun(args []string) {
 		// Resolve agent IP for GRE endpoint
 		a, ok := registry.GetAgent(t.AgentID)
 		if !ok {
-			log.Printf("warning: tunnel %s references unknown agent %s, skipping", t.ID, t.AgentID)
+			slog.Warn("tunnel references unknown agent, skipping", "tunnel_id", t.ID, "agent_id", t.AgentID)
 			continue
 		}
 		agentIP := net.ParseIP(a.AssignedIP)
@@ -146,12 +158,12 @@ func serverRun(args []string) {
 			RemoteIP: agentIP,
 		}
 		if err := greMgr.CreateTunnel(greCfg); err != nil {
-			log.Printf("warning: re-create GRE %s: %v", t.GREInterface, err)
+			slog.Warn("re-create GRE interface", "interface", t.GREInterface, "error", err)
 		}
 
 		// Re-create TPROXY rule
 		if err := tproxyMgr.AddRule(string(t.Protocol), t.PublicPort, cfg.TProxy.Mark); err != nil {
-			log.Printf("warning: re-create TPROXY rule for port %d: %v", t.PublicPort, err)
+			slog.Warn("re-create TPROXY rule", "port", t.PublicPort, "error", err)
 		}
 	}
 	restoredCount := 0
@@ -161,7 +173,7 @@ func serverRun(args []string) {
 		}
 	}
 	if restoredCount > 0 {
-		log.Printf("restored %d active tunnel(s) kernel resources", restoredCount)
+		slog.Info("restored active tunnel kernel resources", "count", restoredCount)
 	}
 
 	// ── HTTP server ─────────────────────────────────────────────────────────
@@ -192,7 +204,7 @@ func serverRun(args []string) {
 			case <-ticker.C:
 				timedOut := registry.CheckTimeouts(30 * time.Second)
 				for _, id := range timedOut {
-					log.Printf("agent %s timed out (no heartbeat for 30s)", id)
+					slog.Info("agent timed out", "agent_id", id, "timeout", "30s")
 				}
 			}
 		}
@@ -218,11 +230,10 @@ func serverRun(args []string) {
 		watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr, store)
 
 		go func() {
-			log.Printf("Pelican watcher started (node %d, interval %ds)",
-				cfg.Pelican.NodeID, cfg.Pelican.PollIntervalSeconds)
+			slog.Info("Pelican watcher started", "node_id", cfg.Pelican.NodeID, "interval_seconds", cfg.Pelican.PollIntervalSeconds)
 
 			if err := watcher.Sync(); err != nil {
-				log.Printf("Pelican watcher: initial sync error: %v", err)
+				slog.Error("Pelican watcher initial sync", "error", err)
 			}
 
 			ticker := time.NewTicker(time.Duration(cfg.Pelican.PollIntervalSeconds) * time.Second)
@@ -233,7 +244,7 @@ func serverRun(args []string) {
 					return
 				case <-ticker.C:
 					if err := watcher.Sync(); err != nil {
-						log.Printf("Pelican watcher: sync error: %v", err)
+						slog.Error("Pelican watcher sync", "error", err)
 					}
 				}
 			}
@@ -243,7 +254,7 @@ func serverRun(args []string) {
 	// ── Start serving ────────────────────────────────────────────────────────
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("server listening on %s", cfg.Server.APIListen)
+		slog.Info("server listening", "addr", cfg.Server.APIListen)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}
@@ -255,9 +266,9 @@ func serverRun(args []string) {
 
 	select {
 	case sig := <-quit:
-		log.Printf("received signal %s, shutting down", sig)
+		slog.Info("received signal, shutting down", "signal", sig)
 	case err := <-serverErr:
-		log.Printf("server error: %v", err)
+		slog.Error("server error", "error", err)
 	}
 
 	cancel()
@@ -265,11 +276,11 @@ func serverRun(args []string) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("warning: graceful shutdown: %v", err)
+		slog.Warn("graceful shutdown", "error", err)
 	}
 
 	if err := routing.CleanupTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
-		log.Printf("warning: cleanup tproxy routing: %v", err)
+		slog.Warn("cleanup tproxy routing", "error", err)
 	}
 
 	// Persist current state.
@@ -282,10 +293,10 @@ func serverRun(args []string) {
 		store.SetTunnel(&t)
 	}
 	if err := store.Flush(); err != nil {
-		log.Printf("warning: flush state: %v", err)
+		slog.Warn("flush state", "error", err)
 	}
 
-	log.Printf("shutdown complete")
+	slog.Info("shutdown complete")
 }
 
 // subnetFirstIP returns the first usable host address (.1) of a CIDR subnet.

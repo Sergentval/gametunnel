@@ -2,7 +2,7 @@ package agentctl
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -29,10 +29,10 @@ type Controller struct {
 	localIP  net.IP
 	serverIP net.IP
 
-	activeTunnels  map[string]models.Tunnel
-	routeRefCount  int
-	stopCh         chan struct{}
-	loopWg         sync.WaitGroup
+	activeTunnels map[string]models.Tunnel
+	routeRefCount int
+	stopCh        chan struct{}
+	loopWg        sync.WaitGroup
 }
 
 // NewController creates a Controller with the supplied dependencies.
@@ -93,7 +93,7 @@ func (c *Controller) Register(privateKey, serverEndpoint string) error {
 		return fmt.Errorf("add server as wireguard peer: %w", err)
 	}
 
-	log.Printf("registered: assigned IP %s, server IP %s", c.localIP, c.serverIP)
+	slog.Info("registered", "assigned_ip", c.localIP, "server_ip", c.serverIP)
 	return nil
 }
 
@@ -136,13 +136,13 @@ func (c *Controller) runLoop() {
 // heartbeatAndSync sends a heartbeat to the server then synchronises tunnels.
 func (c *Controller) heartbeatAndSync() {
 	if err := c.client.Heartbeat(c.agentID); err != nil {
-		log.Printf("heartbeat error: %v", err)
+		slog.Error("heartbeat error", "error", err)
 		return
 	}
 
 	serverTunnels, err := c.client.ListTunnels(c.agentID)
 	if err != nil {
-		log.Printf("list tunnels error: %v", err)
+		slog.Error("list tunnels error", "error", err)
 		return
 	}
 
@@ -164,7 +164,7 @@ func (c *Controller) syncTunnels(serverTunnels []models.Tunnel) {
 	for id, t := range desired {
 		if _, exists := c.activeTunnels[id]; !exists {
 			if err := c.createTunnel(t); err != nil {
-				log.Printf("create tunnel %s (%s): %v", t.Name, id, err)
+				slog.Error("create tunnel", "name", t.Name, "tunnel_id", id, "error", err)
 				continue
 			}
 			c.activeTunnels[id] = t
@@ -175,7 +175,7 @@ func (c *Controller) syncTunnels(serverTunnels []models.Tunnel) {
 	for id, t := range c.activeTunnels {
 		if _, exists := desired[id]; !exists {
 			if err := c.removeTunnel(t); err != nil {
-				log.Printf("remove tunnel %s (%s): %v", t.Name, id, err)
+				slog.Error("remove tunnel", "name", t.Name, "tunnel_id", id, "error", err)
 			}
 			delete(c.activeTunnels, id)
 		}
@@ -201,7 +201,7 @@ func (c *Controller) createTunnel(t models.Tunnel) error {
 	}
 	c.routeRefCount++
 
-	log.Printf("tunnel %s (%s) created", t.Name, t.ID)
+	slog.Info("tunnel created", "name", t.Name, "tunnel_id", t.ID)
 	return nil
 }
 
@@ -217,11 +217,11 @@ func (c *Controller) removeTunnel(t models.Tunnel) error {
 	}
 	if c.routeRefCount == 0 {
 		if err := c.routing.RemoveReturnRoute(c.returnTable); err != nil {
-			log.Printf("remove return route: %v", err)
+			slog.Error("remove return route", "error", err)
 		}
 	}
 
-	log.Printf("tunnel %s (%s) removed", t.Name, t.ID)
+	slog.Info("tunnel removed", "name", t.Name, "tunnel_id", t.ID)
 	return nil
 }
 
@@ -229,7 +229,7 @@ func (c *Controller) removeTunnel(t models.Tunnel) error {
 func (c *Controller) Cleanup() {
 	for id, t := range c.activeTunnels {
 		if err := c.removeTunnel(t); err != nil {
-			log.Printf("cleanup: remove tunnel %s: %v", id, err)
+			slog.Error("cleanup: remove tunnel", "tunnel_id", id, "error", err)
 		}
 		delete(c.activeTunnels, id)
 	}

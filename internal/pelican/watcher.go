@@ -2,7 +2,7 @@ package pelican
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 
 	"github.com/Sergentval/gametunnel/internal/models"
@@ -114,12 +114,12 @@ func (w *Watcher) Sync() error {
 
 		tun, err := w.tunnelMgr.Create(req)
 		if err != nil {
-			log.Printf("pelican watcher: create tunnel for port %d: %v", port, err)
+			slog.Error("pelican watcher: create tunnel", "port", port, "error", err)
 		} else {
-			log.Printf("pelican watcher: created tunnel for port %d (alloc %d, server %d)", port, allocID, serverID)
+			slog.Info("pelican watcher: created tunnel", "port", port, "alloc_id", allocID, "server_id", serverID)
 			w.store.SetTunnel(&tun)
 			if flushErr := w.store.Flush(); flushErr != nil {
-				log.Printf("pelican watcher: flush state after create port %d: %v", port, flushErr)
+				slog.Error("pelican watcher: flush state after create", "port", port, "error", flushErr)
 			}
 		}
 	}
@@ -128,12 +128,12 @@ func (w *Watcher) Sync() error {
 	for port, t := range existing {
 		if _, stillAssigned := assignedPorts[port]; !stillAssigned {
 			if err := w.tunnelMgr.Delete(t.ID); err != nil {
-				log.Printf("pelican watcher: delete orphaned tunnel %s (port %d): %v", t.ID, port, err)
+				slog.Error("pelican watcher: delete orphaned tunnel", "tunnel_id", t.ID, "port", port, "error", err)
 			} else {
-				log.Printf("pelican watcher: removed orphaned tunnel for port %d", port)
+				slog.Info("pelican watcher: removed orphaned tunnel", "port", port)
 				w.store.DeleteTunnel(t.ID)
 				if flushErr := w.store.Flush(); flushErr != nil {
-					log.Printf("pelican watcher: flush state after delete port %d: %v", port, flushErr)
+					slog.Error("pelican watcher: flush state after delete", "port", port, "error", flushErr)
 				}
 			}
 		}
