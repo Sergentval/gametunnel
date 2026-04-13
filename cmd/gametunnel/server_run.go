@@ -124,6 +124,46 @@ func serverRun(args []string) {
 	}
 	tunnelMgr.LoadFromState(restoredTunnels)
 
+	// ── Re-create kernel resources for restored tunnels ─────────────────────
+	// After a restart, state.json has tunnel records but the kernel
+	// has no GRE interfaces or iptables rules. Re-apply them.
+	for _, t := range tunnelMgr.List() {
+		if t.Status != models.TunnelStatusActive {
+			continue
+		}
+		// Resolve agent IP for GRE endpoint
+		a, ok := registry.GetAgent(t.AgentID)
+		if !ok {
+			log.Printf("warning: tunnel %s references unknown agent %s, skipping", t.ID, t.AgentID)
+			continue
+		}
+		agentIP := net.ParseIP(a.AssignedIP)
+
+		// Re-create GRE interface
+		greCfg := models.GREConfig{
+			Name:     t.GREInterface,
+			LocalIP:  serverIP,
+			RemoteIP: agentIP,
+		}
+		if err := greMgr.CreateTunnel(greCfg); err != nil {
+			log.Printf("warning: re-create GRE %s: %v", t.GREInterface, err)
+		}
+
+		// Re-create TPROXY rule
+		if err := tproxyMgr.AddRule(string(t.Protocol), t.PublicPort, cfg.TProxy.Mark); err != nil {
+			log.Printf("warning: re-create TPROXY rule for port %d: %v", t.PublicPort, err)
+		}
+	}
+	restoredCount := 0
+	for _, t := range tunnelMgr.List() {
+		if t.Status == models.TunnelStatusActive {
+			restoredCount++
+		}
+	}
+	if restoredCount > 0 {
+		log.Printf("restored %d active tunnel(s) kernel resources", restoredCount)
+	}
+
 	// ── HTTP server ─────────────────────────────────────────────────────────
 	deps := api.Dependencies{
 		Config:        cfg,
