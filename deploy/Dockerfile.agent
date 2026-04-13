@@ -4,11 +4,11 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /gametunnel-agent ./cmd/agent/
+RUN CGO_ENABLED=0 GOOS=linux go build -o /gametunnel ./cmd/gametunnel/
 
 FROM alpine:3.19
 RUN apk add --no-cache iptables iproute2 kmod wireguard-tools
-COPY --from=builder /gametunnel-agent /usr/local/bin/gametunnel-agent
+COPY --from=builder /gametunnel /usr/local/bin/gametunnel
 COPY deploy/scripts/setup-kernel.sh /usr/local/bin/setup-kernel.sh
 RUN chmod +x /usr/local/bin/setup-kernel.sh
-ENTRYPOINT ["/bin/sh", "-c", "/usr/local/bin/setup-kernel.sh && exec /usr/local/bin/gametunnel-agent"]
+ENTRYPOINT ["/bin/sh", "-c", "/usr/local/bin/setup-kernel.sh && exec /usr/local/bin/gametunnel agent run"]

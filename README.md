@@ -1,121 +1,102 @@
 # GameTunnel
 
-Route game server traffic from a public VPS to a home server using GRE tunnels, WireGuard, and TPROXY — with optional automatic port sync from a [Pelican Panel](https://pelican.dev).
+Self-hosted game server tunneling with transparent source IP preservation.
+
+Expose home game servers through a public VPS. Players connect to the VPS, traffic is tunneled to your home server, and the game server sees the player's real IP. No game server mods, no client plugins.
 
 ```
-Player
-  │  UDP/TCP to VPS public IP
-  ▼
-┌─────────────────────────┐
-│   VPS (public IP)        │
-│   TPROXY intercepts port │
-│   → marks & reroutes     │
-└──────────┬──────────────┘
-           │  GRE tunnel (over WireGuard)
-           ▼
-┌─────────────────────────┐
-│   Home Server (agent)    │
-│   GRE decap → local port │
-│   Game server process    │
-└─────────────────────────┘
+Player (real IP: 1.2.3.4)
+    → VPS:25565 (public)
+    → WireGuard + GRE tunnel (encrypted, IP-preserving)
+    → Home game server sees: 1.2.3.4
 ```
-
-## Features
-
-- **Zero-NAT forwarding** — TPROXY intercepts traffic on the VPS; the real client IP is visible to the game server
-- **GRE over WireGuard** — encapsulated tunnels ride the encrypted WireGuard mesh; no open ports needed on the home firewall
-- **Multi-agent** — one VPS can front multiple home nodes, each with its own WireGuard peer and IP allocation
-- **Persistent state** — tunnel and agent state survives server restarts; GRE interfaces and rules are restored automatically
-- **REST API** — manage tunnels and agents programmatically; bearer-token auth per agent
-- **Pelican Panel integration** — the server polls Pelican's Application API and automatically creates/removes tunnels when game server allocations are assigned or freed
-- **Docker-ready** — multi-stage Dockerfiles and Compose files included; kernel module setup handled at container start
 
 ## Quick Start
 
-### Prerequisites
+### 1. VPS Setup (30 seconds)
 
-- VPS with a public IP running Linux (kernel ≥ 5.4 recommended)
-- Home server running Linux with WireGuard support
-- Go 1.22+ **or** Docker/Docker Compose on both hosts
+```bash
+# Install
+go install github.com/Sergentval/gametunnel/cmd/gametunnel@latest
 
-### 1. Generate WireGuard keys
+# Initialize (auto-generates WireGuard keys, detects public IP)
+gametunnel server init
 
-```sh
-# On the VPS
-wg genkey | tee server.key | wg pubkey > server.pub
+# Create a join token for your home server
+gametunnel server token create home-server-1
 
-# On the home server
-wg genkey | tee agent.key | wg pubkey > agent.pub
+# Start the server
+gametunnel server run
 ```
 
-### 2. Deploy the server (VPS)
+### 2. Home Server Setup (10 seconds)
 
-```sh
-cd deploy/
-cp ../configs/server.example.yaml server.yaml
-# Edit server.yaml: set private_key, subnet, and at least one agent entry
-PUBLIC_IP=<your-vps-ip> docker compose -f docker-compose.server.yml up -d
+```bash
+# Install
+go install github.com/Sergentval/gametunnel/cmd/gametunnel@latest
+
+# Join using the token from step 1
+gametunnel agent join gt_eyJ1IjoiaH...
+
+# Start the agent
+gametunnel agent run
 ```
 
-### 3. Deploy the agent (home server)
+### 3. Done
 
-```sh
-cd deploy/
-cp ../configs/agent.example.yaml agent.yaml
-# Edit agent.yaml: set id, token, private_key, server_endpoint
+Players connect to `YOUR_VPS_IP:25565`. The game server sees their real IP.
+
+## Docker
+
+### Server (VPS)
+
+```bash
+cd deploy
+gametunnel server init --config server.yaml
+gametunnel server token create home-server-1 --config server.yaml
+docker compose -f docker-compose.server.yml up -d
+```
+
+### Agent (Home)
+
+```bash
+cd deploy
+gametunnel agent join <token> --config agent.yaml
 docker compose -f docker-compose.agent.yml up -d
 ```
 
-### 4. Create a tunnel
-
-```sh
-curl -X POST http://<vps-ip>:8080/api/v1/tunnels \
-  -H "Authorization: Bearer <agent-token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "minecraft",
-    "protocol": "udp",
-    "public_port": 25565,
-    "local_port": 25565,
-    "agent_id": "game-node-1"
-  }'
-```
-
-### 5. Connect
-
-Point your game client at `<vps-public-ip>:25565`. Traffic flows through TPROXY on the VPS, over the GRE/WireGuard tunnel, and arrives at the game server on your home machine.
-
 ## Pelican Panel Integration
 
-Enable automatic tunnel management by setting `pelican.enabled: true` in `server.yaml`. The server polls the Pelican Application API on the configured interval and mirrors allocation state into tunnels.
+Auto-create tunnels from Pelican Panel allocations:
 
-```yaml
-pelican:
-  enabled: true
-  panel_url: "https://panel.example.com"
-  api_key: "REPLACE_WITH_PELICAN_API_KEY"
-  node_id: 1
-  default_agent_id: "game-node-1"
-  poll_interval_seconds: 30
-  default_protocol: "udp"
-  port_protocols:
-    25565: "tcp"   # Minecraft Java
-    19132: "udp"   # Minecraft Bedrock
+```bash
+gametunnel server init \
+  --pelican-url https://panel.example.com \
+  --pelican-key ptla_YOUR_KEY \
+  --pelican-node 3
 ```
 
-Tunnels created by Pelican sync are tagged `source: pelican` and are removed automatically when the allocation is unassigned in Pelican.
+Tunnels are created when allocations are assigned to servers and removed when unassigned.
 
-## Configuration Reference
+## Features
 
-| File | Purpose |
-|------|---------|
-| `configs/server.example.yaml` | Server config reference with all options documented |
-| `configs/agent.example.yaml` | Agent config reference |
-| `deploy/docker-compose.server.yml` | Compose file for the VPS |
-| `deploy/docker-compose.agent.yml` | Compose file for the home server |
+- **Source IP preservation** — game servers see real player IPs (TCP + UDP)
+- **One-command setup** — `server init` + `agent join <token>`
+- **Pelican Panel integration** — auto-tunnel from server allocations
+- **Single binary** — `gametunnel` does everything
+- **Docker-native** — deploy with `docker compose up`
+- **Auto-reconnect** — agent recovers from VPS restarts
 
-Full design specification: `docs/superpowers/specs/2026-04-12-gametunnel-design.md`
+## How It Works
+
+- **TPROXY** intercepts player traffic without rewriting headers
+- **GRE** tunnels carry unmodified packets (preserving source + destination IPs)
+- **WireGuard** encrypts the GRE transport between VPS and home
+
+## Architecture
+
+See [design spec](docs/superpowers/specs/2026-04-12-gametunnel-design.md) for full technical details.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT
