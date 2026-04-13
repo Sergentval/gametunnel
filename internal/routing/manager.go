@@ -117,6 +117,7 @@ func EnsureTPROXYRouting(mark int, table int) error {
 		LinkIndex: lo.Attrs().Index,
 		Table:     table,
 		Type:      syscall.RTN_LOCAL,
+		Scope:     syscall.RT_SCOPE_HOST,
 	}
 	if err := netlink.RouteReplace(route); err != nil {
 		return fmt.Errorf("add tproxy local route (table=%d): %w", table, err)
