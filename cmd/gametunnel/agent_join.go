@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/Sergentval/gametunnel/internal/config"
 	"github.com/Sergentval/gametunnel/internal/keygen"
@@ -12,17 +14,32 @@ import (
 )
 
 func agentJoin(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: gametunnel agent join <token> [--config PATH]\n")
-		os.Exit(1)
-	}
-
-	tokenStr := args[0]
-	remaining := args[1:]
-
 	fs := flag.NewFlagSet("agent join", flag.ExitOnError)
 	configPath := fs.String("config", "./agent.yaml", "agent config file path")
-	fs.Parse(remaining)
+	tokenFile := fs.String("token-file", "", "read token from file (use - for stdin)")
+	fs.Parse(args) //nolint:errcheck // ExitOnError handles the error
+
+	var tokenStr string
+	if *tokenFile == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatalf("read token from stdin: %v", err)
+		}
+		tokenStr = strings.TrimSpace(string(data))
+	} else if *tokenFile != "" {
+		data, err := os.ReadFile(*tokenFile)
+		if err != nil {
+			log.Fatalf("read token file: %v", err)
+		}
+		tokenStr = strings.TrimSpace(string(data))
+	} else if len(fs.Args()) >= 1 {
+		tokenStr = strings.TrimSpace(fs.Args()[0])
+	} else {
+		fmt.Fprintf(os.Stderr, "Usage: gametunnel agent join <token> [--config PATH]\n")
+		fmt.Fprintf(os.Stderr, "       echo <token> | gametunnel agent join --token-file -\n")
+		fmt.Fprintf(os.Stderr, "       gametunnel agent join --token-file /path/to/token.txt\n")
+		os.Exit(1)
+	}
 
 	tok, err := token.Decode(tokenStr)
 	if err != nil {
