@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -29,19 +29,24 @@ func agentRun(args []string) {
 		}
 	}
 
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+
 	cfg, err := config.LoadAgentConfig(configPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		slog.Error("load config", "error", err)
+		os.Exit(1)
 	}
 
 	// ── WireGuard ───────────────────────────────────────────────────────────
 	wgMgr, err := netutil.NewWireGuardManager()
 	if err != nil {
-		log.Fatalf("init wireguard manager: %v", err)
+		slog.Error("init wireguard manager", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := wgMgr.Close(); err != nil {
-			log.Printf("warning: close wireguard manager: %v", err)
+			slog.Warn("close wireguard manager", "error", err)
 		}
 	}()
 
@@ -55,7 +60,8 @@ func agentRun(args []string) {
 		0,
 		"0.0.0.0/32",
 	); err != nil {
-		log.Fatalf("setup wireguard interface: %v", err)
+		slog.Error("setup wireguard interface", "error", err)
+		os.Exit(1)
 	}
 
 	// ── GRE + routing ───────────────────────────────────────────────────────
@@ -86,10 +92,10 @@ func agentRun(args []string) {
 		if err == nil {
 			break
 		}
-		log.Printf("registration failed: %v — retrying in 5s", err)
+		slog.Warn("registration failed, retrying in 5s", "error", err)
 		select {
 		case sig := <-quit:
-			log.Printf("received signal %s during registration, exiting", sig)
+			slog.Info("received signal during registration, exiting", "signal", sig)
 			return
 		case <-time.After(5 * time.Second):
 		}
@@ -99,7 +105,7 @@ func agentRun(args []string) {
 	// Signal handler stops the controller.
 	go func() {
 		sig := <-quit
-		log.Printf("received signal %s, stopping", sig)
+		slog.Info("received signal, stopping", "signal", sig)
 		ctrl.Stop()
 	}()
 
@@ -109,5 +115,5 @@ func agentRun(args []string) {
 	// Wait for the run loop goroutine to fully exit before cleaning up state.
 	ctrl.Wait()
 	ctrl.Cleanup()
-	log.Printf("shutdown complete")
+	slog.Info("shutdown complete")
 }
