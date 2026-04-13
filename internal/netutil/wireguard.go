@@ -77,6 +77,13 @@ func (m *wireguardManager) Setup(iface, privateKeyStr string, listenPort int, ad
 		return fmt.Errorf("set wireguard interface %q up: %w", iface, err)
 	}
 
+	// Set WireGuard MTU to account for WireGuard overhead.
+	// Standard: 1500 - 80 (WireGuard overhead) = 1420.
+	const wgMTU = 1420
+	if err := netlink.LinkSetMTU(nl, wgMTU); err != nil {
+		return fmt.Errorf("set wireguard %q MTU to %d: %w", iface, wgMTU, err)
+	}
+
 	return nil
 }
 

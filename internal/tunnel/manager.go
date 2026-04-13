@@ -94,6 +94,12 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 		return models.Tunnel{}, fmt.Errorf("add tproxy rule for port %d: %w", req.PublicPort, err)
 	}
 
+	// Add TCP MSS clamping on the GRE interface.
+	// Non-fatal: MSS clamp is a performance optimization, not a correctness requirement.
+	if err := netutil.EnsureMSSClamp(greName); err != nil {
+		_ = err // log-worthy but not tunnel-breaking
+	}
+
 	t := models.Tunnel{
 		ID:                  id,
 		Name:                req.Name,
@@ -150,6 +156,9 @@ func (m *Manager) Delete(id string) error {
 	if err := m.tproxy.RemoveRule(string(t.Protocol), t.PublicPort, m.mark); err != nil {
 		return fmt.Errorf("remove tproxy rule for tunnel %s: %w", id, err)
 	}
+
+	// Remove MSS clamp before deleting the GRE interface.
+	_ = netutil.RemoveMSSClamp(t.GREInterface)
 
 	if err := m.gre.DeleteTunnel(t.GREInterface); err != nil {
 		return fmt.Errorf("delete GRE interface %q for tunnel %s: %w", t.GREInterface, id, err)

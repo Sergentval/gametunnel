@@ -8,6 +8,11 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+// GREMTU is the MTU configured on GRE tunnel interfaces to prevent
+// fragmentation through the WireGuard + GRE double encapsulation.
+// Calculated as: 1500 (standard) - 80 (WireGuard) - 24 (GRE) - 16 (safety) = 1380.
+const GREMTU = 1380
+
 type greManager struct{}
 
 // NewGREManager returns a GREManager backed by netlink.
@@ -40,6 +45,13 @@ func (m *greManager) CreateTunnel(cfg models.GREConfig) error {
 
 	if err := netlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("set gre tunnel %q up: %w", cfg.Name, err)
+	}
+
+	// Set MTU to prevent fragmentation.
+	// Standard MTU 1500 - WireGuard overhead (~80) - GRE overhead (24) = 1396.
+	// Use 1380 for safety margin (some paths have lower MTU).
+	if err := netlink.LinkSetMTU(link, GREMTU); err != nil {
+		return fmt.Errorf("set gre tunnel %q MTU to %d: %w", cfg.Name, GREMTU, err)
 	}
 
 	return nil
