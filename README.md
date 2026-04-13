@@ -87,6 +87,31 @@ Tunnels are created when allocations are assigned to servers and removed when un
 - **Docker-native** — deploy with `docker compose up`
 - **Auto-reconnect** — agent recovers from VPS restarts
 
+## Benchmarks
+
+Real-world latency measurements between an OVH VPS (Gravelines, FR) and a home server (Paris, FR) through the WireGuard tunnel.
+
+![Overview](docs/benchmarks/overview.svg)
+
+![Latency by packet size](docs/benchmarks/latency.svg)
+
+![Jitter and packet loss](docs/benchmarks/jitter.svg)
+
+<details>
+<summary>Raw results</summary>
+
+| Size | Sent | Lost | Min | Avg | P50 | P95 | P99 | Max | Jitter |
+|------|------|------|-----|-----|-----|-----|-----|-----|--------|
+| 64B | 200 | 0 | 8.22ms | 9.38ms | 9.24ms | 11.53ms | 12.87ms | 12.90ms | 0.76ms |
+| 256B | 200 | 0 | 8.10ms | 9.38ms | 9.24ms | 10.25ms | 12.98ms | 13.71ms | 0.70ms |
+| 512B | 200 | 0 | 8.08ms | 9.42ms | 9.27ms | 11.49ms | 13.11ms | 14.02ms | 0.83ms |
+| 1024B | 200 | 0 | 7.89ms | 9.37ms | 9.28ms | 10.33ms | 11.85ms | 12.00ms | 0.52ms |
+| 1380B | 200 | 6 | 7.83ms | 9.26ms | 9.27ms | 10.11ms | 12.22ms | 12.85ms | 0.61ms |
+
+Run your own: `gametunnel bench server` on one end, `gametunnel bench client --target <IP>:9999` on the other.
+
+</details>
+
 ## How It Works
 
 - **TPROXY** intercepts player traffic without rewriting headers
