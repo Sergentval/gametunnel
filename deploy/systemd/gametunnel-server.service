@@ -1,0 +1,24 @@
+[Unit]
+Description=GameTunnel Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/gametunnel server check --config /etc/gametunnel/server.yaml
+ExecStart=/usr/local/bin/gametunnel server run --config /etc/gametunnel/server.yaml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ReadWritePaths=/var/lib/gametunnel /etc/gametunnel
+PrivateTmp=true
+
+# Required capabilities for networking
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
