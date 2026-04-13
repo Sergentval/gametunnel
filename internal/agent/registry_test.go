@@ -29,6 +29,8 @@ func (m *mockWG) RemovePeer(iface string, pk string) error {
 	return nil
 }
 
+func (m *mockWG) SetAddress(iface string, address string) error { return nil }
+
 func (m *mockWG) Close() error { return nil }
 
 func (m *mockWG) PublicKey() string { return "server-pub-key" }

@@ -26,7 +26,8 @@ type AgentWireGuardSettings struct {
 
 // AgentRoutingSettings holds policy routing configuration for the agent.
 type AgentRoutingSettings struct {
-	ReturnTable int `yaml:"return_table"`
+	ReturnTable  int    `yaml:"return_table"`
+	DockerBridge string `yaml:"docker_bridge"`
 }
 
 // AgentConfig is the top-level configuration for the tunnel agent.
@@ -46,6 +47,9 @@ func (c *AgentConfig) applyDefaults() {
 	}
 	if c.Routing.ReturnTable == 0 {
 		c.Routing.ReturnTable = 200
+	}
+	if c.Routing.DockerBridge == "" {
+		c.Routing.DockerBridge = "pelican0"
 	}
 }
 

@@ -24,7 +24,8 @@ type mockWG struct {
 	pubKey string
 }
 
-func (m *mockWG) Setup(_ string, _ string, _ int, _ string) error { return nil }
+func (m *mockWG) Setup(_ string, _ string, _ int, _ string) error     { return nil }
+func (m *mockWG) SetAddress(_ string, _ string) error                  { return nil }
 func (m *mockWG) AddPeer(_ string, _ models.WireGuardPeerConfig) error { return nil }
 func (m *mockWG) RemovePeer(_ string, _ string) error                  { return nil }
 func (m *mockWG) Close() error                                         { return nil }
@@ -42,6 +43,13 @@ func (m *mockTPROXY) AddRule(_ string, _ int, _ string) error           { return
 func (m *mockTPROXY) RemoveRule(_ string, _ int, _ string) error        { return nil }
 func (m *mockTPROXY) EnsurePolicyRouting(_ string, _ int) error         { return nil }
 func (m *mockTPROXY) CleanupPolicyRouting(_ string, _ int) error        { return nil }
+
+type mockRouting struct{}
+
+func (m *mockRouting) AddReturnRoute(_ int, _ net.IP, _ string) error   { return nil }
+func (m *mockRouting) RemoveReturnRoute(_ int) error                    { return nil }
+func (m *mockRouting) AddSourceRule(_ int, _ *net.IPNet) error          { return nil }
+func (m *mockRouting) RemoveSourceRule(_ int, _ *net.IPNet) error       { return nil }
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -72,7 +80,7 @@ func setupTestAPI(t *testing.T) *testEnv {
 	}
 
 	localIP := net.ParseIP("10.99.0.1")
-	tunnelMgr := tunnel.NewManager(&mockGRE{}, &mockTPROXY{}, "0x1", 100, localIP)
+	tunnelMgr := tunnel.NewManager(&mockGRE{}, &mockTPROXY{}, &mockRouting{}, "0x1", 100, localIP)
 
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	store, err := state.NewStore(stateFile)

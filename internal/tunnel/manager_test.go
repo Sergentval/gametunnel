@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/routing"
 )
 
 // ── mocks ────────────────────────────────────────────────────────────────────
@@ -56,12 +57,22 @@ func (m *mockTPROXY) RemoveRule(proto string, port int, mark string) error {
 func (m *mockTPROXY) EnsurePolicyRouting(string, int) error  { return nil }
 func (m *mockTPROXY) CleanupPolicyRouting(string, int) error { return nil }
 
+type mockRouting struct{}
+
+func (m *mockRouting) AddReturnRoute(table int, gateway net.IP, device string) error { return nil }
+func (m *mockRouting) RemoveReturnRoute(table int) error                             { return nil }
+func (m *mockRouting) AddSourceRule(table int, srcNet *net.IPNet) error               { return nil }
+func (m *mockRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error            { return nil }
+
+var _ routing.Manager = (*mockRouting)(nil)
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func newTestManager() (*Manager, *mockGRE, *mockTPROXY) {
 	gre := newMockGRE()
 	tp := newMockTPROXY()
-	mgr := NewManager(gre, tp, "0x1", 100, net.ParseIP("10.0.0.1"))
+	rt := &mockRouting{}
+	mgr := NewManager(gre, tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"))
 	return mgr, gre, tp
 }
 

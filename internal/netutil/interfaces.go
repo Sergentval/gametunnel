@@ -12,6 +12,7 @@ type GREManager interface {
 // WireGuardManager manages a WireGuard interface and its peers.
 type WireGuardManager interface {
 	Setup(iface string, privateKey string, listenPort int, address string) error
+	SetAddress(iface string, address string) error
 	AddPeer(iface string, peer models.WireGuardPeerConfig) error
 	RemovePeer(iface string, publicKey string) error
 	Close() error

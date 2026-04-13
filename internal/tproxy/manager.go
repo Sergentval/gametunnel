@@ -20,43 +20,43 @@ func NewManager() (Manager, error) {
 	return &manager{ipt: ipt}, nil
 }
 
-// AddRule inserts a TPROXY rule in the mangle PREROUTING chain for the given
-// protocol, destination port, and firewall mark. The call is idempotent.
+// AddRule inserts a MARK rule in the mangle PREROUTING chain for the given
+// protocol, destination port, and firewall mark. Marked packets are then
+// routed through GRE by policy routing (no local TPROXY socket needed).
+// The call is idempotent.
 func (m *manager) AddRule(protocol string, port int, mark string) error {
 	portStr := strconv.Itoa(port)
 	rulespec := []string{
 		"-p", protocol,
 		"--dport", portStr,
-		"-j", "TPROXY",
-		"--tproxy-mark", mark + "/" + mark,
-		"--on-port", portStr,
+		"-j", "MARK",
+		"--set-xmark", mark + "/" + mark,
 	}
 	if err := m.ipt.AppendUnique("mangle", "PREROUTING", rulespec...); err != nil {
-		return fmt.Errorf("add tproxy rule (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
+		return fmt.Errorf("add mark rule (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
 	}
 	return nil
 }
 
-// RemoveRule deletes the TPROXY rule for the given protocol, port, and mark.
+// RemoveRule deletes the MARK rule for the given protocol, port, and mark.
 // Returns nil if the rule does not exist (idempotent).
 func (m *manager) RemoveRule(protocol string, port int, mark string) error {
 	portStr := strconv.Itoa(port)
 	rulespec := []string{
 		"-p", protocol,
 		"--dport", portStr,
-		"-j", "TPROXY",
-		"--tproxy-mark", mark + "/" + mark,
-		"--on-port", portStr,
+		"-j", "MARK",
+		"--set-xmark", mark + "/" + mark,
 	}
 	exists, err := m.ipt.Exists("mangle", "PREROUTING", rulespec...)
 	if err != nil {
-		return fmt.Errorf("check tproxy rule existence (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
+		return fmt.Errorf("check mark rule existence (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
 	}
 	if !exists {
 		return nil
 	}
 	if err := m.ipt.Delete("mangle", "PREROUTING", rulespec...); err != nil {
-		return fmt.Errorf("remove tproxy rule (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
+		return fmt.Errorf("remove mark rule (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
 	}
 	return nil
 }

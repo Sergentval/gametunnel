@@ -10,6 +10,11 @@ import (
 	"github.com/Sergentval/gametunnel/internal/tunnel"
 )
 
+// AgentIPResolver looks up an agent's assigned IP at call time.
+type AgentIPResolver interface {
+	GetAgent(id string) (models.Agent, bool)
+}
+
 // PelicanAPI is the interface that the Watcher uses to communicate with Pelican.
 // It allows the client to be mocked in tests.
 type PelicanAPI interface {
@@ -24,8 +29,8 @@ type WatcherConfig struct {
 	NodeID int
 	// DefaultAgentID is the agent that handles tunnels for this node.
 	DefaultAgentID string
-	// AgentIP is the WireGuard IP of the default agent.
-	AgentIP net.IP
+	// AgentRegistry resolves the agent's WireGuard IP dynamically at sync time.
+	AgentRegistry AgentIPResolver
 	// DefaultProto is the fallback protocol ("tcp" or "udp") when a port is
 	// not listed in PortProtocols.
 	DefaultProto string
@@ -89,9 +94,34 @@ func (w *Watcher) Sync() error {
 	}
 
 	// Step 5: Create tunnels for newly assigned ports.
+	// Resolve the agent IP dynamically — the agent may not have registered yet.
+	var agentIP net.IP
+	if w.config.AgentRegistry != nil {
+		if a, ok := w.config.AgentRegistry.GetAgent(w.config.DefaultAgentID); ok {
+			agentIP = net.ParseIP(a.AssignedIP)
+		}
+	}
+
+	// Count how many new ports need tunnels.
+	newPorts := 0
+	for port := range assignedPorts {
+		if _, alreadyExists := existing[port]; !alreadyExists {
+			newPorts++
+		}
+	}
+
+	if newPorts > 0 && agentIP == nil {
+		slog.Warn("pelican watcher: agent not registered yet, skipping tunnel creation",
+			"agent_id", w.config.DefaultAgentID, "pending_ports", newPorts)
+	}
+
 	for port, alloc := range assignedPorts {
 		if _, alreadyExists := existing[port]; alreadyExists {
 			continue
+		}
+
+		if agentIP == nil {
+			continue // skip — will retry on the next sync cycle
 		}
 
 		srv := allocServerMap[alloc.ID]
@@ -106,7 +136,7 @@ func (w *Watcher) Sync() error {
 			PublicPort:          port,
 			LocalPort:           port,
 			AgentID:             w.config.DefaultAgentID,
-			AgentIP:             w.config.AgentIP,
+			AgentIP:             agentIP,
 			Source:              models.TunnelSourcePelican,
 			PelicanAllocationID: &allocID,
 			PelicanServerID:     &serverID,

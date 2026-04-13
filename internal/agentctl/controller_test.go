@@ -24,13 +24,14 @@ func (m *mockWireGuard) Setup(iface, privateKey string, listenPort int, address 
 	m.setupCalled = true
 	return nil
 }
+func (m *mockWireGuard) SetAddress(iface, address string) error { return nil }
 func (m *mockWireGuard) AddPeer(iface string, peer models.WireGuardPeerConfig) error {
 	m.addPeerCalled = true
 	return nil
 }
 func (m *mockWireGuard) RemovePeer(iface, publicKey string) error { return nil }
-func (m *mockWireGuard) Close() error                            { return nil }
-func (m *mockWireGuard) PublicKey() string                       { return m.publicKey }
+func (m *mockWireGuard) Close() error                             { return nil }
+func (m *mockWireGuard) PublicKey() string                        { return m.publicKey }
 
 type mockGRE struct {
 	created []string
@@ -68,7 +69,7 @@ func (m *mockRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error { ret
 // newTestController wires up a Controller against the provided httptest server URL.
 func newTestController(serverURL string, wg *mockWireGuard, gre *mockGRE, rt *mockRouting) *Controller {
 	client := NewClient(serverURL, "test-token")
-	ctrl := NewController(client, "home-node-1", 1, wg, gre, rt, "wg0", 200)
+	ctrl := NewController(client, "home-node-1", 1, wg, gre, rt, "wg0", 200, "pelican0")
 	// Pre-set localIP and serverIP so tunnel operations don't panic.
 	ctrl.localIP = net.IP{10, 99, 0, 2}
 	ctrl.serverIP = net.IP{10, 99, 0, 1}
@@ -154,7 +155,7 @@ func TestController_HeartbeatLoop(t *testing.T) {
 
 	client := NewClient(srv.URL, "test-token")
 	// 1-second interval for a fast test.
-	ctrl := NewController(client, "home-node-1", 1, wg, gre, rt, "wg0", 200)
+	ctrl := NewController(client, "home-node-1", 1, wg, gre, rt, "wg0", 200, "pelican0")
 	ctrl.localIP = net.IP{10, 99, 0, 2}
 	ctrl.serverIP = net.IP{10, 99, 0, 1}
 

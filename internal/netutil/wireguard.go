@@ -87,6 +87,11 @@ func (m *wireguardManager) Setup(iface, privateKeyStr string, listenPort int, ad
 	return nil
 }
 
+// SetAddress replaces the IP address on an existing WireGuard interface.
+func (m *wireguardManager) SetAddress(iface string, address string) error {
+	return AssignGREAddress(iface, address)
+}
+
 // AddPeer configures a WireGuard peer on the given interface.
 func (m *wireguardManager) AddPeer(iface string, peer models.WireGuardPeerConfig) error {
 	// Parse public key.

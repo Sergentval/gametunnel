@@ -81,12 +81,35 @@ func (m *mockTPROXY) RemoveRule(proto string, port int, mark string) error {
 func (m *mockTPROXY) EnsurePolicyRouting(string, int) error  { return nil }
 func (m *mockTPROXY) CleanupPolicyRouting(string, int) error { return nil }
 
+type mockRouting struct{}
+
+func (m *mockRouting) AddReturnRoute(_ int, _ net.IP, _ string) error { return nil }
+func (m *mockRouting) RemoveReturnRoute(_ int) error                  { return nil }
+func (m *mockRouting) AddSourceRule(_ int, _ *net.IPNet) error        { return nil }
+func (m *mockRouting) RemoveSourceRule(_ int, _ *net.IPNet) error     { return nil }
+
+// ── mock AgentIPResolver ────────────────────────────────────────────────────
+
+type mockAgentResolver struct {
+	agents map[string]models.Agent
+}
+
+func newMockAgentResolver(agents map[string]models.Agent) *mockAgentResolver {
+	return &mockAgentResolver{agents: agents}
+}
+
+func (m *mockAgentResolver) GetAgent(id string) (models.Agent, bool) {
+	a, ok := m.agents[id]
+	return a, ok
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestTunnelManager() (*tunnel.Manager, *mockGRE, *mockTPROXY) {
 	gre := newMockGRE()
 	tp := newMockTPROXY()
-	mgr := tunnel.NewManager(gre, tp, "0x1", 100, net.ParseIP("10.0.0.1"))
+	rt := &mockRouting{}
+	mgr := tunnel.NewManager(gre, tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"))
 	return mgr, gre, tp
 }
 
@@ -94,8 +117,10 @@ func defaultWatcherConfig() WatcherConfig {
 	return WatcherConfig{
 		NodeID:         7,
 		DefaultAgentID: "agent1",
-		AgentIP:        net.ParseIP("10.8.0.2"),
-		DefaultProto:   "udp",
+		AgentRegistry: newMockAgentResolver(map[string]models.Agent{
+			"agent1": {ID: "agent1", AssignedIP: "10.8.0.2"},
+		}),
+		DefaultProto: "udp",
 	}
 }
 

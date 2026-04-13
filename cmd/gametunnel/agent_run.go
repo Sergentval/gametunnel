@@ -79,6 +79,7 @@ func agentRun(args []string) {
 		routingMgr,
 		cfg.WireGuard.Interface,
 		cfg.Routing.ReturnTable,
+		cfg.Routing.DockerBridge,
 	)
 
 	// ── Registration with retry ─────────────────────────────────────────────

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/Sergentval/gametunnel/internal/netutil"
+	"github.com/Sergentval/gametunnel/internal/routing"
 	"github.com/Sergentval/gametunnel/internal/tproxy"
 )
 
@@ -26,28 +27,30 @@ type CreateRequest struct {
 	PelicanServerID     *int
 }
 
-// Manager orchestrates the lifecycle of GRE tunnels and TPROXY rules.
+// Manager orchestrates the lifecycle of GRE tunnels and MARK rules.
 type Manager struct {
-	mu       sync.Mutex
-	gre      netutil.GREManager
-	tproxy   tproxy.Manager
-	mark     string
-	table    int
-	localIP  net.IP
-	tunnels  map[string]models.Tunnel
-	portUsed map[int]string // port → tunnel ID
+	mu         sync.Mutex
+	gre        netutil.GREManager
+	tproxy     tproxy.Manager
+	routingMgr routing.Manager
+	mark       string
+	table      int
+	localIP    net.IP
+	tunnels    map[string]models.Tunnel
+	portUsed   map[int]string // port → tunnel ID
 }
 
 // NewManager creates a Manager with the provided dependencies.
-func NewManager(gre netutil.GREManager, tp tproxy.Manager, mark string, table int, localIP net.IP) *Manager {
+func NewManager(gre netutil.GREManager, tp tproxy.Manager, rt routing.Manager, mark string, table int, localIP net.IP) *Manager {
 	return &Manager{
-		gre:      gre,
-		tproxy:   tp,
-		mark:     mark,
-		table:    table,
-		localIP:  localIP,
-		tunnels:  make(map[string]models.Tunnel),
-		portUsed: make(map[int]string),
+		gre:        gre,
+		tproxy:     tp,
+		routingMgr: rt,
+		mark:       mark,
+		table:      table,
+		localIP:    localIP,
+		tunnels:    make(map[string]models.Tunnel),
+		portUsed:   make(map[int]string),
 	}
 }
 
@@ -88,10 +91,25 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 		return models.Tunnel{}, fmt.Errorf("create GRE tunnel %q: %w", greName, err)
 	}
 
-	// Add the TPROXY rule; roll back GRE on failure.
+	// Add the MARK rule; roll back GRE on failure.
 	if err := m.tproxy.AddRule(string(req.Protocol), req.PublicPort, m.mark); err != nil {
 		_ = m.gre.DeleteTunnel(greName)
-		return models.Tunnel{}, fmt.Errorf("add tproxy rule for port %d: %w", req.PublicPort, err)
+		return models.Tunnel{}, fmt.Errorf("add mark rule for port %d: %w", req.PublicPort, err)
+	}
+
+	// Set up GRE forward route so marked packets route through this GRE device.
+	if err := routing.EnsureGREForwardRoute(m.table, greName); err != nil {
+		_ = err // non-fatal: log-worthy but route may already exist from another tunnel
+	}
+
+	// Add FORWARD accept rules for traffic between public interface and GRE.
+	if err := routing.EnsureForwardRules(greName); err != nil {
+		_ = err // non-fatal: forwarding may still work if policy is ACCEPT
+	}
+
+	// Set sysctl for GRE device: rp_filter=0, accept_local=1.
+	if err := netutil.EnsureGREsysctls(greName); err != nil {
+		_ = err // non-fatal: sysctl may fail in containers
 	}
 
 	// Add TCP MSS clamping on the GRE interface.
@@ -154,8 +172,11 @@ func (m *Manager) Delete(id string) error {
 	}
 
 	if err := m.tproxy.RemoveRule(string(t.Protocol), t.PublicPort, m.mark); err != nil {
-		return fmt.Errorf("remove tproxy rule for tunnel %s: %w", id, err)
+		return fmt.Errorf("remove mark rule for tunnel %s: %w", id, err)
 	}
+
+	// Clean up FORWARD rules for this GRE interface.
+	_ = routing.CleanupForwardRules(t.GREInterface)
 
 	// Remove MSS clamp before deleting the GRE interface.
 	_ = netutil.RemoveMSSClamp(t.GREInterface)

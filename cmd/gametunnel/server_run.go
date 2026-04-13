@@ -99,8 +99,20 @@ func serverRun(args []string) {
 		os.Exit(1)
 	}
 
-	// ── GRE + TPROXY managers ───────────────────────────────────────────────
+	// Clear the game-traffic fwmark on GRE outer packets to prevent routing loops.
+	if err := routing.EnsureGREMarkClear(mark); err != nil {
+		slog.Error("ensure GRE mark clear", "error", err)
+		os.Exit(1)
+	}
+
+	// Enable accept_local globally so GRE reply packets are accepted.
+	if err := netutil.SetSysctl("net.ipv4.conf.all.accept_local", "1"); err != nil {
+		slog.Warn("set accept_local globally", "error", err)
+	}
+
+	// ── GRE + MARK managers ────────────────────────────────────────────────
 	greMgr := netutil.NewGREManager()
+	routingMgr := routing.NewManager()
 
 	tproxyMgr, err := tproxy.NewManager()
 	if err != nil {
@@ -108,7 +120,7 @@ func serverRun(args []string) {
 		os.Exit(1)
 	}
 
-	tunnelMgr := tunnel.NewManager(greMgr, tproxyMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP)
+	tunnelMgr := tunnel.NewManager(greMgr, tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP)
 
 	// ── Agent registry ──────────────────────────────────────────────────────
 	publicIP := os.Getenv("PUBLIC_IP")
@@ -161,9 +173,20 @@ func serverRun(args []string) {
 			slog.Warn("re-create GRE interface", "interface", t.GREInterface, "error", err)
 		}
 
-		// Re-create TPROXY rule
+		// Re-create MARK rule
 		if err := tproxyMgr.AddRule(string(t.Protocol), t.PublicPort, cfg.TProxy.Mark); err != nil {
-			slog.Warn("re-create TPROXY rule", "port", t.PublicPort, "error", err)
+			slog.Warn("re-create MARK rule", "port", t.PublicPort, "error", err)
+		}
+
+		// Re-create GRE forward route and FORWARD rules.
+		if err := routing.EnsureGREForwardRoute(cfg.TProxy.RoutingTable, t.GREInterface); err != nil {
+			slog.Warn("re-create GRE forward route", "interface", t.GREInterface, "error", err)
+		}
+		if err := routing.EnsureForwardRules(t.GREInterface); err != nil {
+			slog.Warn("re-create FORWARD rules", "interface", t.GREInterface, "error", err)
+		}
+		if err := netutil.EnsureGREsysctls(t.GREInterface); err != nil {
+			slog.Warn("re-set GRE sysctls", "interface", t.GREInterface, "error", err)
 		}
 	}
 	restoredCount := 0
@@ -214,16 +237,10 @@ func serverRun(args []string) {
 	if cfg.Pelican.Enabled {
 		pelicanClient := pelican.NewPelicanClient(cfg.Pelican.PanelURL, cfg.Pelican.APIKey)
 
-		// Resolve the default agent's WireGuard IP from the registry.
-		var agentIP net.IP
-		if a, ok := registry.GetAgent(cfg.Pelican.DefaultAgentID); ok {
-			agentIP = net.ParseIP(a.AssignedIP)
-		}
-
 		watcherCfg := pelican.WatcherConfig{
 			NodeID:         cfg.Pelican.NodeID,
 			DefaultAgentID: cfg.Pelican.DefaultAgentID,
-			AgentIP:        agentIP,
+			AgentRegistry:  registry,
 			DefaultProto:   cfg.Pelican.DefaultProtocol,
 			PortProtocols:  cfg.Pelican.PortProtocols,
 		}
@@ -281,6 +298,9 @@ func serverRun(args []string) {
 
 	if err := routing.CleanupTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
 		slog.Warn("cleanup tproxy routing", "error", err)
+	}
+	if err := routing.CleanupGREMarkClear(mark); err != nil {
+		slog.Warn("cleanup GRE mark clear", "error", err)
 	}
 
 	// Persist current state.
