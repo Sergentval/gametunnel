@@ -169,3 +169,34 @@ func TestLoadAgentConfig_FileNotFound(t *testing.T) {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
+
+func TestWriteAgentConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/agent.yaml"
+
+	original := &AgentConfig{
+		Agent: AgentSettings{
+			ID:        "write-test-agent",
+			ServerURL: "https://tunnel.example.com",
+			Token:     "write-tok",
+		},
+		WireGuard: AgentWireGuardSettings{
+			PrivateKey:     "cHJpdmF0ZWtleWhlcmUK",
+			ServerEndpoint: "1.2.3.4:51820",
+		},
+	}
+	original.applyDefaults()
+
+	if err := WriteAgentConfig(path, original); err != nil {
+		t.Fatalf("WriteAgentConfig() unexpected error: %v", err)
+	}
+
+	reloaded, err := LoadAgentConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAgentConfig() unexpected error: %v", err)
+	}
+
+	if reloaded.Agent.ID != original.Agent.ID {
+		t.Errorf("Agent.ID: got %q, want %q", reloaded.Agent.ID, original.Agent.ID)
+	}
+}

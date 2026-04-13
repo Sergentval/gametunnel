@@ -186,6 +186,76 @@ func TestAgentByToken(t *testing.T) {
 	})
 }
 
+func TestWriteServerConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+
+	original := &ServerConfig{
+		WireGuard: WireGuardSettings{
+			PrivateKey: "test-private-key-value",
+			Subnet:     "10.100.0.0/24",
+		},
+		Agents: []AgentEntry{
+			{ID: "agent-write-1", Token: "tok-write-1"},
+		},
+	}
+	original.applyDefaults()
+
+	if err := WriteServerConfig(path, original); err != nil {
+		t.Fatalf("WriteServerConfig() unexpected error: %v", err)
+	}
+
+	reloaded, err := LoadServerConfigPermissive(path)
+	if err != nil {
+		t.Fatalf("LoadServerConfigPermissive() unexpected error: %v", err)
+	}
+
+	if reloaded.WireGuard.PrivateKey != original.WireGuard.PrivateKey {
+		t.Errorf("PrivateKey: got %q, want %q", reloaded.WireGuard.PrivateKey, original.WireGuard.PrivateKey)
+	}
+}
+
+func TestAddAgentToConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+
+	// Write an initial config with one agent.
+	initial := &ServerConfig{
+		WireGuard: WireGuardSettings{
+			PrivateKey: "test-key",
+			Subnet:     "10.0.0.0/24",
+		},
+		Agents: []AgentEntry{
+			{ID: "agent-a", Token: "tok-a"},
+		},
+	}
+	initial.applyDefaults()
+	if err := WriteServerConfig(path, initial); err != nil {
+		t.Fatalf("WriteServerConfig() unexpected error: %v", err)
+	}
+
+	// Add a second agent.
+	second := AgentEntry{ID: "agent-b", Token: "tok-b"}
+	if err := AddAgentToConfig(path, second); err != nil {
+		t.Fatalf("AddAgentToConfig() unexpected error: %v", err)
+	}
+
+	// Reload and verify both agents are present.
+	reloaded, err := LoadServerConfigPermissive(path)
+	if err != nil {
+		t.Fatalf("LoadServerConfigPermissive() unexpected error: %v", err)
+	}
+	if len(reloaded.Agents) != 2 {
+		t.Fatalf("len(Agents) = %d, want 2", len(reloaded.Agents))
+	}
+	if reloaded.Agents[0].ID != "agent-a" {
+		t.Errorf("Agents[0].ID = %q, want agent-a", reloaded.Agents[0].ID)
+	}
+	if reloaded.Agents[1].ID != "agent-b" {
+		t.Errorf("Agents[1].ID = %q, want agent-b", reloaded.Agents[1].ID)
+	}
+}
+
 func TestAgentByID(t *testing.T) {
 	path := writeTemp(t, validYAML)
 	cfg, err := LoadServerConfig(path)

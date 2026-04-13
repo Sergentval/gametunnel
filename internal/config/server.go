@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -151,4 +152,46 @@ func (c *ServerConfig) AgentByID(id string) *AgentEntry {
 		}
 	}
 	return nil
+}
+
+// WriteServerConfig marshals cfg to YAML and writes it to path, creating
+// parent directories as needed. The file is written with mode 0600.
+func WriteServerConfig(path string, cfg *ServerConfig) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return nil
+}
+
+// LoadServerConfigPermissive reads and parses a YAML config file at path,
+// applies defaults, but skips validation. Used for partial/bootstrapped configs.
+func LoadServerConfigPermissive(path string) (*ServerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	var cfg ServerConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file %q: %w", path, err)
+	}
+	cfg.applyDefaults()
+	return &cfg, nil
+}
+
+// AddAgentToConfig loads the config at path (permissively), appends entry,
+// and writes the result back to the same path.
+func AddAgentToConfig(path string, entry AgentEntry) error {
+	cfg, err := LoadServerConfigPermissive(path)
+	if err != nil {
+		return err
+	}
+	cfg.Agents = append(cfg.Agents, entry)
+	return WriteServerConfig(path, cfg)
 }
