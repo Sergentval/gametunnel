@@ -42,6 +42,8 @@ func serverCmd(args []string) {
 		serverToken(args[1:])
 	case "check":
 		serverCheck(args[1:])
+	case "status":
+		serverStatus(args[1:])
 	case "help", "--help", "-h":
 		printServerUsage()
 	default:
@@ -63,6 +65,8 @@ func agentCmd(args []string) {
 		agentJoin(args[1:])
 	case "check":
 		agentCheck(args[1:])
+	case "status":
+		agentStatus(args[1:])
 	case "help", "--help", "-h":
 		printAgentUsage()
 	default:
@@ -84,11 +88,13 @@ Usage:
 Server Commands:
   init                           Generate server config with auto WireGuard keys
   run                            Start the tunnel server daemon
+  status                         Show server status and health
   token create <agent-id>        Generate a join token for an agent
 
 Agent Commands:
   join <token>                   Configure agent from a join token
   run                            Start the tunnel agent daemon
+  status                         Show agent connection status
 `)
 }
 
@@ -105,6 +111,10 @@ Commands:
 
   run [flags]                    Start the tunnel server daemon
     --config PATH                Config file path (default: /etc/gametunnel/server.yaml)
+
+  status [flags]                 Show server status and health
+    --url URL                    Server API URL (default: http://127.0.0.1:8080)
+    --token TOKEN                Bearer token for detailed agent/tunnel info
 
   token create <agent-id>        Generate a join token for an agent
     --config PATH                Config file path (default: ./server.yaml)
@@ -123,6 +133,9 @@ Commands:
 
   run [flags]                    Start the tunnel agent daemon
     --config PATH                Config file path (default: /etc/gametunnel/agent.yaml)
+
+  status [flags]                 Show agent connection status
+    --config PATH                Config file path (default: ./agent.yaml)
 
   check [flags]                  Validate agent config file
     --config PATH                Config file path (default: ./agent.yaml)
