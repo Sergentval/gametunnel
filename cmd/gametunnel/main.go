@@ -40,6 +40,8 @@ func serverCmd(args []string) {
 		serverInit(args[1:])
 	case "token":
 		serverToken(args[1:])
+	case "check":
+		serverCheck(args[1:])
 	case "help", "--help", "-h":
 		printServerUsage()
 	default:
@@ -59,6 +61,8 @@ func agentCmd(args []string) {
 		agentRun(args[1:])
 	case "join":
 		agentJoin(args[1:])
+	case "check":
+		agentCheck(args[1:])
 	case "help", "--help", "-h":
 		printAgentUsage()
 	default:
@@ -104,6 +108,9 @@ Commands:
 
   token create <agent-id>        Generate a join token for an agent
     --config PATH                Config file path (default: ./server.yaml)
+
+  check [flags]                  Validate server config file
+    --config PATH                Config file path (default: ./server.yaml)
 `)
 }
 
@@ -116,5 +123,8 @@ Commands:
 
   run [flags]                    Start the tunnel agent daemon
     --config PATH                Config file path (default: /etc/gametunnel/agent.yaml)
+
+  check [flags]                  Validate agent config file
+    --config PATH                Config file path (default: ./agent.yaml)
 `)
 }
