@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/Sergentval/gametunnel/internal/agent"
 	"github.com/Sergentval/gametunnel/internal/config"
+	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/Sergentval/gametunnel/internal/state"
 	"github.com/Sergentval/gametunnel/internal/tunnel"
 )
@@ -50,8 +52,34 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("DELETE /tunnels/{id}", auth(http.HandlerFunc(tunnelH.Delete)))
 
 	// Health check — no auth required.
+	startTime := time.Now()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		agents := deps.Registry.ListAgents()
+		tunnels := deps.TunnelManager.List()
+
+		online := 0
+		for _, a := range agents {
+			if a.Status == models.AgentStatusOnline {
+				online++
+			}
+		}
+
+		active := 0
+		for _, t := range tunnels {
+			if t.Status == models.TunnelStatusActive {
+				active++
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":         "ok",
+			"version":        "0.1.0",
+			"uptime_seconds": int(time.Since(startTime).Seconds()),
+			"agents_online":  online,
+			"agents_total":   len(agents),
+			"tunnels_active": active,
+			"tunnels_total":  len(tunnels),
+		})
 	})
 
 	return mux

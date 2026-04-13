@@ -140,12 +140,24 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("expected status=ok, got %q", body["status"])
+	}
+	if body["version"] != "0.1.0" {
+		t.Fatalf("expected version=0.1.0, got %q", body["version"])
+	}
+	if _, ok := body["uptime_seconds"]; !ok {
+		t.Fatal("expected uptime_seconds field in health response")
+	}
+	if _, ok := body["agents_total"]; !ok {
+		t.Fatal("expected agents_total field in health response")
+	}
+	if _, ok := body["tunnels_total"]; !ok {
+		t.Fatal("expected tunnels_total field in health response")
 	}
 }
 
