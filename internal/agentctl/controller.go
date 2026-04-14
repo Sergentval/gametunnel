@@ -1,11 +1,10 @@
 package agentctl
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +13,8 @@ import (
 	"github.com/Sergentval/gametunnel/internal/netutil"
 	"github.com/Sergentval/gametunnel/internal/routing"
 	"github.com/coreos/go-iptables/iptables"
+	"github.com/docker/docker/api/types/container"
+	dockerclient "github.com/docker/docker/client"
 	"github.com/vishvananda/netlink"
 )
 
@@ -237,43 +238,41 @@ func (c *Controller) createTunnel(t models.Tunnel) error {
 	return nil
 }
 
-// detectContainerIP shells out to docker to find a container listening on the
-// given port and returns its bridge IP. Returns "" if not found.
+// detectContainerIP uses the Docker Engine SDK to find a container listening on
+// the given port and returns its bridge IP. Returns "" if not found.
 func (c *Controller) detectContainerIP(port int) string {
-	// Find container by port mapping.
-	portStr := fmt.Sprintf("%d", port)
-	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}").Output()
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
-		slog.Debug("docker ps failed", "error", err)
+		slog.Debug("create docker client", "error", err)
+		return ""
+	}
+	defer cli.Close()
+
+	ctx := context.Background()
+	containers, err := cli.ContainerList(ctx, container.ListOptions{})
+	if err != nil {
+		slog.Debug("list containers", "error", err)
 		return ""
 	}
 
-	var containerName string
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, ":"+portStr+"->") || strings.Contains(line, ":"+portStr+"/") {
-			parts := strings.SplitN(line, "\t", 2)
-			if len(parts) >= 1 {
-				containerName = strings.TrimSpace(parts[0])
-				break
+	for _, ctr := range containers {
+		for _, p := range ctr.Ports {
+			if int(p.PublicPort) == port {
+				// Found the container, inspect for bridge IP.
+				info, err := cli.ContainerInspect(ctx, ctr.ID)
+				if err != nil {
+					slog.Debug("inspect container", "id", ctr.ID[:12], "error", err)
+					return ""
+				}
+				for _, net := range info.NetworkSettings.Networks {
+					if net.IPAddress != "" {
+						return net.IPAddress
+					}
+				}
 			}
 		}
 	}
-	if containerName == "" {
-		return ""
-	}
-
-	// Get the container's bridge IP.
-	ipOut, err := exec.Command("docker", "inspect", containerName,
-		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}").Output()
-	if err != nil {
-		slog.Debug("docker inspect failed", "container", containerName, "error", err)
-		return ""
-	}
-	ip := strings.TrimSpace(string(bytes.TrimRight(ipOut, "\n")))
-	if net.ParseIP(ip) == nil {
-		return ""
-	}
-	return ip
+	return ""
 }
 
 // setupDNAT adds iptables DNAT and POSTROUTING RETURN rules for a tunnel.

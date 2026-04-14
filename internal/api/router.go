@@ -18,6 +18,7 @@ type Dependencies struct {
 	Registry      *agent.Registry
 	TunnelManager *tunnel.Manager
 	Store         *state.Store
+	StartTime     time.Time
 }
 
 // NewRouter constructs an http.Handler with all API routes registered.
@@ -81,6 +82,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			"tunnels_total":  len(tunnels),
 		})
 	})
+
+	// Monitoring endpoints — no auth required.
+	mux.HandleFunc("GET /healthz", deps.healthHandler)
+	mux.HandleFunc("GET /metrics", deps.metricsHandler)
 
 	return mux
 }

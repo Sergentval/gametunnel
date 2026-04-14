@@ -192,6 +192,7 @@ func serverRun(args []string) {
 		Registry:      registry,
 		TunnelManager: tunnelMgr,
 		Store:         store,
+		StartTime:     time.Now(),
 	}
 	handler := api.NewRouter(deps)
 
