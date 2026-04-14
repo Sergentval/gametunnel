@@ -79,9 +79,13 @@ func (r *Registry) Register(id, publicKey string) (RegisterResponse, error) {
 	}
 
 	// Add (or re-add) the WireGuard peer.
+	// AllowedIPs is set to 0.0.0.0/0 so that game traffic with arbitrary
+	// destination IPs can be routed to this peer through WireGuard.
+	// NOTE: This assumes a single agent. Multi-agent would need per-agent
+	// routing or split AllowedIPs ranges.
 	peerCfg := models.WireGuardPeerConfig{
 		PublicKey:  publicKey,
-		AllowedIPs: []string{assignedIP + "/32"},
+		AllowedIPs: []string{"0.0.0.0/0", "::/0"},
 		AssignedIP: assignedIP,
 	}
 	if err := r.wg.AddPeer(r.wgIface, peerCfg, r.keepaliveSeconds); err != nil {

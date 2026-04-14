@@ -90,8 +90,8 @@ func (m *netlinkManager) RemoveSourceRule(table int, srcNet *net.IPNet) error {
 
 // EnsureTPROXYRouting installs the ip rule (fwmark/mask → table, priority 100)
 // and moves the local routing table from priority 0 to priority 150 so that
-// marked packets hit the fwmark rule first and are forwarded through GRE
-// instead of being consumed locally. Idempotent.
+// marked packets hit the fwmark rule first and are forwarded through the
+// WireGuard tunnel instead of being consumed locally. Idempotent.
 func EnsureTPROXYRouting(mark int, table int) error {
 	// ip rule: fwmark <mark>/<mark> lookup <table> priority 100
 	maskVal := uint32(mark)
@@ -157,13 +157,13 @@ func CleanupTPROXYRouting(mark int, table int) error {
 	return nil
 }
 
-// EnsureGREForwardRoute adds a default route through a GRE device in the
+// EnsureForwardRoute adds a default route through a network device in the
 // specified routing table. Called when a tunnel is created so that marked
-// packets are forwarded through the GRE interface.
-func EnsureGREForwardRoute(table int, greDevice string) error {
-	link, err := netlink.LinkByName(greDevice)
+// packets are forwarded through the WireGuard interface to the agent.
+func EnsureForwardRoute(table int, device string) error {
+	link, err := netlink.LinkByName(device)
 	if err != nil {
-		return fmt.Errorf("find GRE device %q: %w", greDevice, err)
+		return fmt.Errorf("find device %q: %w", device, err)
 	}
 
 	_, dst, _ := net.ParseCIDR("0.0.0.0/0")
@@ -174,14 +174,14 @@ func EnsureGREForwardRoute(table int, greDevice string) error {
 		Scope:     syscall.RT_SCOPE_LINK,
 	}
 	if err := netlink.RouteReplace(route); err != nil {
-		return fmt.Errorf("add GRE forward route (table=%d dev=%s): %w", table, greDevice, err)
+		return fmt.Errorf("add forward route (table=%d dev=%s): %w", table, device, err)
 	}
 	return nil
 }
 
-// CleanupGREForwardRoute removes the default route from the specified table.
+// CleanupForwardRoute removes the default route from the specified table.
 // Returns nil if the route does not exist (idempotent).
-func CleanupGREForwardRoute(table int) error {
+func CleanupForwardRoute(table int) error {
 	_, dst, _ := net.ParseCIDR("0.0.0.0/0")
 	route := &netlink.Route{
 		Dst:   dst,
@@ -191,16 +191,16 @@ func CleanupGREForwardRoute(table int) error {
 		if isNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("remove GRE forward route (table=%d): %w", table, err)
+		return fmt.Errorf("remove forward route (table=%d): %w", table, err)
 	}
 	return nil
 }
 
 // EnsureForwardRules adds iptables FORWARD accept rules between the public
-// interface and the GRE device, in both directions. Rules are inserted at
-// position 1 (top of chain) so they are evaluated before Docker's DROP rules.
-// Uses Exists+Insert for idempotency.
-func EnsureForwardRules(greDevice string) error {
+// interface and the tunnel device (WireGuard), in both directions. Rules are
+// inserted at position 1 (top of chain) so they are evaluated before Docker's
+// DROP rules. Uses Exists+Insert for idempotency.
+func EnsureForwardRules(device string) error {
 	ipt, err := iptables.New()
 	if err != nil {
 		return fmt.Errorf("create iptables client: %w", err)
@@ -212,28 +212,28 @@ func EnsureForwardRules(greDevice string) error {
 		return fmt.Errorf("detect public interface: %w", err)
 	}
 
-	// ens3 → greDevice
-	fwd := []string{"-i", pubIface, "-o", greDevice, "-j", "ACCEPT"}
+	// public → tunnel device
+	fwd := []string{"-i", pubIface, "-o", device, "-j", "ACCEPT"}
 	if exists, _ := ipt.Exists("filter", "FORWARD", fwd...); !exists {
 		if err := ipt.Insert("filter", "FORWARD", 1, fwd...); err != nil {
-			return fmt.Errorf("insert FORWARD rule %s→%s: %w", pubIface, greDevice, err)
+			return fmt.Errorf("insert FORWARD rule %s→%s: %w", pubIface, device, err)
 		}
 	}
 
-	// greDevice → ens3
-	rev := []string{"-i", greDevice, "-o", pubIface, "-j", "ACCEPT"}
+	// tunnel device → public
+	rev := []string{"-i", device, "-o", pubIface, "-j", "ACCEPT"}
 	if exists, _ := ipt.Exists("filter", "FORWARD", rev...); !exists {
 		if err := ipt.Insert("filter", "FORWARD", 1, rev...); err != nil {
-			return fmt.Errorf("insert FORWARD rule %s→%s: %w", greDevice, pubIface, err)
+			return fmt.Errorf("insert FORWARD rule %s→%s: %w", device, pubIface, err)
 		}
 	}
 
 	return nil
 }
 
-// CleanupForwardRules removes the iptables FORWARD accept rules for a GRE
+// CleanupForwardRules removes the iptables FORWARD accept rules for a tunnel
 // device. Returns nil if the rules do not exist (idempotent).
-func CleanupForwardRules(greDevice string) error {
+func CleanupForwardRules(device string) error {
 	ipt, err := iptables.New()
 	if err != nil {
 		return fmt.Errorf("create iptables client: %w", err)
@@ -244,12 +244,12 @@ func CleanupForwardRules(greDevice string) error {
 		return nil // best-effort: can't determine interface
 	}
 
-	fwd := []string{"-i", pubIface, "-o", greDevice, "-j", "ACCEPT"}
+	fwd := []string{"-i", pubIface, "-o", device, "-j", "ACCEPT"}
 	if exists, _ := ipt.Exists("filter", "FORWARD", fwd...); exists {
 		_ = ipt.Delete("filter", "FORWARD", fwd...)
 	}
 
-	rev := []string{"-i", greDevice, "-o", pubIface, "-j", "ACCEPT"}
+	rev := []string{"-i", device, "-o", pubIface, "-j", "ACCEPT"}
 	if exists, _ := ipt.Exists("filter", "FORWARD", rev...); exists {
 		_ = ipt.Delete("filter", "FORWARD", rev...)
 	}
@@ -257,38 +257,45 @@ func CleanupForwardRules(greDevice string) error {
 	return nil
 }
 
-// EnsureGREMarkClear adds a mangle OUTPUT rule that clears the given fwmark on
-// GRE encapsulated packets. Without this, the outer GRE packet inherits the
-// game-traffic mark and causes a routing loop (table → gre → encap → table...).
-// Idempotent: checks Exists before Insert.
-func EnsureGREMarkClear(mark int) error {
-	ipt, err := iptables.New()
-	if err != nil {
-		return fmt.Errorf("create iptables client: %w", err)
-	}
+// EnsureWGFwMarkRule adds a policy routing rule that sends packets with the
+// WireGuard FwMark to the main routing table. This prevents a routing loop:
+// without it, WireGuard's own UDP transport packets would match the game-traffic
+// fwmark rule and be routed back into the WireGuard interface.
+//
+// The WireGuard device is configured with FwMark = wgMark. The ip rule
+// "fwmark <wgMark> lookup main priority 90" ensures those packets use normal
+// routing instead of the game-traffic table.
+func EnsureWGFwMarkRule(wgMark int) error {
+	maskVal := uint32(wgMark)
+	rule := netlink.NewRule()
+	rule.Mark = uint32(wgMark)
+	rule.Mask = &maskVal
+	rule.Table = 254 // RT_TABLE_MAIN
+	rule.Priority = 90
 
-	xmark := fmt.Sprintf("0x0/0x%x", mark)
-	rule := []string{"-p", "gre", "-j", "MARK", "--set-xmark", xmark}
-	if exists, _ := ipt.Exists("mangle", "OUTPUT", rule...); !exists {
-		if err := ipt.Insert("mangle", "OUTPUT", 1, rule...); err != nil {
-			return fmt.Errorf("insert GRE mark-clear rule: %w", err)
-		}
+	// Idempotent: delete then add.
+	_ = netlink.RuleDel(rule)
+	if err := netlink.RuleAdd(rule); err != nil {
+		return fmt.Errorf("add WireGuard fwmark rule (mark=0x%x table=main): %w", wgMark, err)
 	}
 	return nil
 }
 
-// CleanupGREMarkClear removes the mangle OUTPUT rule that clears the fwmark on
-// GRE packets. Returns nil if the rule does not exist (idempotent).
-func CleanupGREMarkClear(mark int) error {
-	ipt, err := iptables.New()
-	if err != nil {
-		return fmt.Errorf("create iptables client: %w", err)
-	}
+// CleanupWGFwMarkRule removes the policy routing rule for WireGuard's FwMark.
+// Returns nil if the rule does not exist (idempotent).
+func CleanupWGFwMarkRule(wgMark int) error {
+	maskVal := uint32(wgMark)
+	rule := netlink.NewRule()
+	rule.Mark = uint32(wgMark)
+	rule.Mask = &maskVal
+	rule.Table = 254 // RT_TABLE_MAIN
+	rule.Priority = 90
 
-	xmark := fmt.Sprintf("0x0/0x%x", mark)
-	rule := []string{"-p", "gre", "-j", "MARK", "--set-xmark", xmark}
-	if exists, _ := ipt.Exists("mangle", "OUTPUT", rule...); exists {
-		_ = ipt.Delete("mangle", "OUTPUT", rule...)
+	if err := netlink.RuleDel(rule); err != nil {
+		if isNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("remove WireGuard fwmark rule: %w", err)
 	}
 	return nil
 }

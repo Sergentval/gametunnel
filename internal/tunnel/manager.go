@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
-	"github.com/Sergentval/gametunnel/internal/netutil"
 	"github.com/Sergentval/gametunnel/internal/routing"
 	"github.com/Sergentval/gametunnel/internal/tproxy"
 )
@@ -27,36 +26,38 @@ type CreateRequest struct {
 	PelicanServerID     *int
 }
 
-// Manager orchestrates the lifecycle of GRE tunnels and MARK rules.
+// Manager orchestrates the lifecycle of tunnels and MARK rules.
+// Game traffic is forwarded directly through WireGuard (no GRE encapsulation).
 type Manager struct {
-	mu         sync.Mutex
-	gre        netutil.GREManager
-	tproxy     tproxy.Manager
-	routingMgr routing.Manager
-	mark       string
-	table      int
-	localIP    net.IP
-	tunnels    map[string]models.Tunnel
-	portUsed   map[int]string // port → tunnel ID
+	mu          sync.Mutex
+	tproxy      tproxy.Manager
+	routingMgr  routing.Manager
+	mark        string
+	table       int
+	localIP     net.IP
+	wgInterface string
+	tunnels     map[string]models.Tunnel
+	portUsed    map[int]string // port → tunnel ID
 }
 
 // NewManager creates a Manager with the provided dependencies.
-func NewManager(gre netutil.GREManager, tp tproxy.Manager, rt routing.Manager, mark string, table int, localIP net.IP) *Manager {
+// wgInterface is the WireGuard interface name used to forward game traffic.
+func NewManager(tp tproxy.Manager, rt routing.Manager, mark string, table int, localIP net.IP, wgInterface string) *Manager {
 	return &Manager{
-		gre:        gre,
-		tproxy:     tp,
-		routingMgr: rt,
-		mark:       mark,
-		table:      table,
-		localIP:    localIP,
-		tunnels:    make(map[string]models.Tunnel),
-		portUsed:   make(map[int]string),
+		tproxy:      tp,
+		routingMgr:  rt,
+		mark:        mark,
+		table:       table,
+		localIP:     localIP,
+		wgInterface: wgInterface,
+		tunnels:     make(map[string]models.Tunnel),
+		portUsed:    make(map[int]string),
 	}
 }
 
-// Create builds a new tunnel: allocates an ID, creates the GRE interface, adds
-// the TPROXY rule, and registers the tunnel in the in-memory maps.
-// It rolls back the GRE interface on TPROXY failure.
+// Create builds a new tunnel: allocates an ID, adds the TPROXY MARK rule,
+// sets up the WireGuard forward route, and registers the tunnel in memory.
+// Game traffic is forwarded directly through WireGuard (no GRE).
 func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -73,49 +74,19 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	}
 	id := hex.EncodeToString(idBytes)
 
-	// Determine a unique GRE interface name.
-	greName := models.SanitizeGREName(req.Name)
-	var nameErr error
-	greName, nameErr = m.resolveGRENameCollision(greName)
-	if nameErr != nil {
-		return models.Tunnel{}, nameErr
-	}
-
-	// Create the GRE interface.
-	greCfg := models.GREConfig{
-		Name:     greName,
-		LocalIP:  m.localIP,
-		RemoteIP: req.AgentIP,
-	}
-	if err := m.gre.CreateTunnel(greCfg); err != nil {
-		return models.Tunnel{}, fmt.Errorf("create GRE tunnel %q: %w", greName, err)
-	}
-
-	// Add the MARK rule; roll back GRE on failure.
+	// Add the MARK rule.
 	if err := m.tproxy.AddRule(string(req.Protocol), req.PublicPort, m.mark); err != nil {
-		_ = m.gre.DeleteTunnel(greName)
 		return models.Tunnel{}, fmt.Errorf("add mark rule for port %d: %w", req.PublicPort, err)
 	}
 
-	// Set up GRE forward route so marked packets route through this GRE device.
-	if err := routing.EnsureGREForwardRoute(m.table, greName); err != nil {
-		_ = err // non-fatal: log-worthy but route may already exist from another tunnel
+	// Set up forward route so marked packets route through the WireGuard interface.
+	if err := routing.EnsureForwardRoute(m.table, m.wgInterface); err != nil {
+		_ = err // non-fatal: route may already exist from another tunnel
 	}
 
-	// Add FORWARD accept rules for traffic between public interface and GRE.
-	if err := routing.EnsureForwardRules(greName); err != nil {
+	// Add FORWARD accept rules for traffic between public interface and WireGuard.
+	if err := routing.EnsureForwardRules(m.wgInterface); err != nil {
 		_ = err // non-fatal: forwarding may still work if policy is ACCEPT
-	}
-
-	// Set sysctl for GRE device: rp_filter=0, accept_local=1.
-	if err := netutil.EnsureGREsysctls(greName); err != nil {
-		_ = err // non-fatal: sysctl may fail in containers
-	}
-
-	// Add TCP MSS clamping on the GRE interface.
-	// Non-fatal: MSS clamp is a performance optimization, not a correctness requirement.
-	if err := netutil.EnsureMSSClamp(greName); err != nil {
-		_ = err // log-worthy but not tunnel-breaking
 	}
 
 	t := models.Tunnel{
@@ -125,7 +96,7 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 		PublicPort:          req.PublicPort,
 		LocalPort:           req.LocalPort,
 		AgentID:             req.AgentID,
-		GREInterface:        greName,
+		GREInterface:        "", // unused: kept for backward compat with state.json
 		Source:              req.Source,
 		PelicanAllocationID: req.PelicanAllocationID,
 		PelicanServerID:     req.PelicanServerID,
@@ -139,29 +110,9 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	return t, nil
 }
 
-// resolveGRENameCollision appends a numeric suffix until the name is unique.
-// Returns an error if all candidates (2–99) are already taken.
-// Must be called with m.mu held.
-func (m *Manager) resolveGRENameCollision(name string) (string, error) {
-	exists, _ := m.gre.TunnelExists(name)
-	if !exists {
-		return name, nil
-	}
-	for i := 2; i <= 99; i++ {
-		candidate := name + fmt.Sprintf("%d", i)
-		// Truncate to 15 chars if needed.
-		if len(candidate) > 15 {
-			candidate = candidate[:15]
-		}
-		exists, _ = m.gre.TunnelExists(candidate)
-		if !exists {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("all GRE name candidates for %q are taken", name)
-}
-
-// Delete removes a tunnel by ID, cleaning up both the TPROXY rule and GRE interface.
+// Delete removes a tunnel by ID, cleaning up the TPROXY rule.
+// The WireGuard forward route and FORWARD rules are shared across tunnels
+// and are cleaned up on server shutdown, not per-tunnel deletion.
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -173,16 +124,6 @@ func (m *Manager) Delete(id string) error {
 
 	if err := m.tproxy.RemoveRule(string(t.Protocol), t.PublicPort, m.mark); err != nil {
 		return fmt.Errorf("remove mark rule for tunnel %s: %w", id, err)
-	}
-
-	// Clean up FORWARD rules for this GRE interface.
-	_ = routing.CleanupForwardRules(t.GREInterface)
-
-	// Remove MSS clamp before deleting the GRE interface.
-	_ = netutil.RemoveMSSClamp(t.GREInterface)
-
-	if err := m.gre.DeleteTunnel(t.GREInterface); err != nil {
-		return fmt.Errorf("delete GRE interface %q for tunnel %s: %w", t.GREInterface, id, err)
 	}
 
 	delete(m.tunnels, id)

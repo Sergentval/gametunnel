@@ -26,9 +26,12 @@ func NewWireGuardManager() (WireGuardManager, error) {
 	return &wireguardManager{client: client}, nil
 }
 
-// Setup creates (or reuses) a WireGuard interface, configures its private key
-// and listen port, assigns an IP address, and brings it up.
-func (m *wireguardManager) Setup(iface, privateKeyStr string, listenPort int, address string) error {
+// Setup creates (or reuses) a WireGuard interface, configures its private key,
+// listen port, and optional FirewallMark, assigns an IP address, and brings it up.
+// fwMark sets the WireGuard device's FirewallMark so the kernel tags WG's own
+// UDP transport packets, allowing policy routing to send them via the main table
+// instead of the game-traffic table. Pass 0 to skip (agent side).
+func (m *wireguardManager) Setup(iface, privateKeyStr string, listenPort int, address string, fwMark ...int) error {
 	// 1. Create the WireGuard interface — ignore "already exists".
 	link := &netlink.GenericLink{
 		LinkAttrs: netlink.LinkAttrs{Name: iface},
@@ -55,11 +58,16 @@ func (m *wireguardManager) Setup(iface, privateKeyStr string, listenPort int, ad
 	pubKeyDerived := privateKey.PublicKey()
 	m.publicKey = base64.StdEncoding.EncodeToString(pubKeyDerived[:])
 
-	// 4. Configure the device.
-	if err := m.client.ConfigureDevice(iface, wgtypes.Config{
+	// 4. Configure the device (with optional FirewallMark).
+	cfg := wgtypes.Config{
 		PrivateKey: &privateKey,
 		ListenPort: &listenPort,
-	}); err != nil {
+	}
+	if len(fwMark) > 0 && fwMark[0] != 0 {
+		mark := fwMark[0]
+		cfg.FirewallMark = &mark
+	}
+	if err := m.client.ConfigureDevice(iface, cfg); err != nil {
 		return fmt.Errorf("configure wireguard device %q: %w", iface, err)
 	}
 

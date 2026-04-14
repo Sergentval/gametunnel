@@ -11,31 +11,6 @@ import (
 
 // ── mocks ────────────────────────────────────────────────────────────────────
 
-type mockGRE struct {
-	created map[string]models.GREConfig
-	deleted map[string]bool
-}
-
-func newMockGRE() *mockGRE {
-	return &mockGRE{created: make(map[string]models.GREConfig), deleted: make(map[string]bool)}
-}
-
-func (m *mockGRE) CreateTunnel(cfg models.GREConfig) error {
-	m.created[cfg.Name] = cfg
-	return nil
-}
-
-func (m *mockGRE) DeleteTunnel(name string) error {
-	m.deleted[name] = true
-	delete(m.created, name)
-	return nil
-}
-
-func (m *mockGRE) TunnelExists(name string) (bool, error) {
-	_, ok := m.created[name]
-	return ok, nil
-}
-
 type mockTPROXY struct {
 	rules map[string]bool
 }
@@ -68,12 +43,11 @@ var _ routing.Manager = (*mockRouting)(nil)
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func newTestManager() (*Manager, *mockGRE, *mockTPROXY) {
-	gre := newMockGRE()
+func newTestManager() (*Manager, *mockTPROXY) {
 	tp := newMockTPROXY()
 	rt := &mockRouting{}
-	mgr := NewManager(gre, tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"))
-	return mgr, gre, tp
+	mgr := NewManager(tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"), "wg-gt")
+	return mgr, tp
 }
 
 func defaultReq(name string, port int, agentID string) CreateRequest {
@@ -91,7 +65,7 @@ func defaultReq(name string, port int, agentID string) CreateRequest {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 func TestManager_CreateTunnel(t *testing.T) {
-	mgr, gre, tp := newTestManager()
+	mgr, tp := newTestManager()
 
 	tun, err := mgr.Create(defaultReq("myserver", 25565, "agent1"))
 	if err != nil {
@@ -106,14 +80,6 @@ func TestManager_CreateTunnel(t *testing.T) {
 	}
 	if tun.PublicPort != 25565 {
 		t.Errorf("expected public port 25565, got %d", tun.PublicPort)
-	}
-	if tun.GREInterface == "" {
-		t.Error("GREInterface should not be empty")
-	}
-
-	// GRE interface created.
-	if _, created := gre.created[tun.GREInterface]; !created {
-		t.Errorf("GRE interface %q not found in mock", tun.GREInterface)
 	}
 
 	// TPROXY rule added.
@@ -133,21 +99,15 @@ func TestManager_CreateTunnel(t *testing.T) {
 }
 
 func TestManager_DeleteTunnel(t *testing.T) {
-	mgr, gre, tp := newTestManager()
+	mgr, tp := newTestManager()
 
 	tun, err := mgr.Create(defaultReq("myserver", 25565, "agent1"))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	greName := tun.GREInterface
 
 	if err := mgr.Delete(tun.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
-	}
-
-	// GRE deleted.
-	if !gre.deleted[greName] {
-		t.Errorf("GRE interface %q was not deleted", greName)
 	}
 
 	// TPROXY rule removed.
@@ -163,7 +123,7 @@ func TestManager_DeleteTunnel(t *testing.T) {
 }
 
 func TestManager_CreateDuplicatePort(t *testing.T) {
-	mgr, _, _ := newTestManager()
+	mgr, _ := newTestManager()
 
 	if _, err := mgr.Create(defaultReq("server1", 25565, "agent1")); err != nil {
 		t.Fatalf("first Create: %v", err)
@@ -176,7 +136,7 @@ func TestManager_CreateDuplicatePort(t *testing.T) {
 }
 
 func TestManager_ListByAgent(t *testing.T) {
-	mgr, _, _ := newTestManager()
+	mgr, _ := newTestManager()
 
 	if _, err := mgr.Create(defaultReq("server-a1", 25565, "agentA")); err != nil {
 		t.Fatalf("Create a1: %v", err)
@@ -204,7 +164,7 @@ func TestManager_ListByAgent(t *testing.T) {
 }
 
 func TestManager_DeleteByAgent(t *testing.T) {
-	mgr, gre, _ := newTestManager()
+	mgr, _ := newTestManager()
 
 	t1, err := mgr.Create(defaultReq("server1", 25565, "agentX"))
 	if err != nil {
@@ -228,14 +188,6 @@ func TestManager_DeleteByAgent(t *testing.T) {
 	}
 	if _, ok := mgr.Get(t2.ID); ok {
 		t.Error("t2 should be deleted")
-	}
-
-	// GRE interfaces deleted.
-	if !gre.deleted[t1.GREInterface] {
-		t.Errorf("GRE %q not deleted", t1.GREInterface)
-	}
-	if !gre.deleted[t2.GREInterface] {
-		t.Errorf("GRE %q not deleted", t2.GREInterface)
 	}
 
 	// agentY tunnel still present.

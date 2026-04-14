@@ -17,7 +17,7 @@ func newMockWG() *mockWG {
 	return &mockWG{peers: make(map[string]bool)}
 }
 
-func (m *mockWG) Setup(string, string, int, string) error { return nil }
+func (m *mockWG) Setup(_ string, _ string, _ int, _ string, _ ...int) error { return nil }
 
 func (m *mockWG) AddPeer(iface string, peer models.WireGuardPeerConfig, keepaliveSeconds int) error {
 	m.peers[peer.PublicKey] = true

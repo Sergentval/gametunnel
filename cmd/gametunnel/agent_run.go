@@ -64,8 +64,7 @@ func agentRun(args []string) {
 		os.Exit(1)
 	}
 
-	// ── GRE + routing ───────────────────────────────────────────────────────
-	greMgr := netutil.NewGREManager()
+	// ── Routing ────────────────────────────────────────────────────────────
 	routingMgr := routing.NewManager()
 
 	// ── API client + controller ─────────────────────────────────────────────
@@ -75,7 +74,6 @@ func agentRun(args []string) {
 		cfg.Agent.ID,
 		cfg.Agent.HeartbeatIntervalSeconds,
 		wgMgr,
-		greMgr,
 		routingMgr,
 		cfg.WireGuard.Interface,
 		cfg.Routing.ReturnTable,

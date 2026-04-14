@@ -24,18 +24,12 @@ type mockWG struct {
 	pubKey string
 }
 
-func (m *mockWG) Setup(_ string, _ string, _ int, _ string) error     { return nil }
-func (m *mockWG) SetAddress(_ string, _ string) error                  { return nil }
+func (m *mockWG) Setup(_ string, _ string, _ int, _ string, _ ...int) error { return nil }
+func (m *mockWG) SetAddress(_ string, _ string) error                        { return nil }
 func (m *mockWG) AddPeer(_ string, _ models.WireGuardPeerConfig, _ int) error { return nil }
-func (m *mockWG) RemovePeer(_ string, _ string) error                  { return nil }
-func (m *mockWG) Close() error                                         { return nil }
-func (m *mockWG) PublicKey() string                                    { return m.pubKey }
-
-type mockGRE struct{}
-
-func (m *mockGRE) CreateTunnel(_ models.GREConfig) error  { return nil }
-func (m *mockGRE) DeleteTunnel(_ string) error            { return nil }
-func (m *mockGRE) TunnelExists(_ string) (bool, error)    { return false, nil }
+func (m *mockWG) RemovePeer(_ string, _ string) error                        { return nil }
+func (m *mockWG) Close() error                                               { return nil }
+func (m *mockWG) PublicKey() string                                          { return m.pubKey }
 
 type mockTPROXY struct{}
 
@@ -80,7 +74,7 @@ func setupTestAPI(t *testing.T) *testEnv {
 	}
 
 	localIP := net.ParseIP("10.99.0.1")
-	tunnelMgr := tunnel.NewManager(&mockGRE{}, &mockTPROXY{}, &mockRouting{}, "0x1", 100, localIP)
+	tunnelMgr := tunnel.NewManager(&mockTPROXY{}, &mockRouting{}, "0x1", 100, localIP, "wg0")
 
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	store, err := state.NewStore(stateFile)

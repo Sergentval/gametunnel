@@ -31,33 +31,6 @@ func (m *mockPelicanAPI) BuildAllocationServerMap(nodeID int) (map[int]Server, e
 	return m.allocServerMap, nil
 }
 
-// ── mock GRE ─────────────────────────────────────────────────────────────────
-
-type mockGRE struct {
-	created map[string]models.GREConfig
-	deleted map[string]bool
-}
-
-func newMockGRE() *mockGRE {
-	return &mockGRE{created: make(map[string]models.GREConfig), deleted: make(map[string]bool)}
-}
-
-func (m *mockGRE) CreateTunnel(cfg models.GREConfig) error {
-	m.created[cfg.Name] = cfg
-	return nil
-}
-
-func (m *mockGRE) DeleteTunnel(name string) error {
-	m.deleted[name] = true
-	delete(m.created, name)
-	return nil
-}
-
-func (m *mockGRE) TunnelExists(name string) (bool, error) {
-	_, ok := m.created[name]
-	return ok, nil
-}
-
 // ── mock TPROXY ───────────────────────────────────────────────────────────────
 
 type mockTPROXY struct {
@@ -105,12 +78,11 @@ func (m *mockAgentResolver) GetAgent(id string) (models.Agent, bool) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func newTestTunnelManager() (*tunnel.Manager, *mockGRE, *mockTPROXY) {
-	gre := newMockGRE()
+func newTestTunnelManager() (*tunnel.Manager, *mockTPROXY) {
 	tp := newMockTPROXY()
 	rt := &mockRouting{}
-	mgr := tunnel.NewManager(gre, tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"))
-	return mgr, gre, tp
+	mgr := tunnel.NewManager(tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"), "wg-gt")
+	return mgr, tp
 }
 
 func defaultWatcherConfig() WatcherConfig {
@@ -136,7 +108,7 @@ func newTestStore(t *testing.T) *state.Store {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestWatcher_Sync_CreateNew(t *testing.T) {
-	mgr, _, _ := newTestTunnelManager()
+	mgr, _ := newTestTunnelManager()
 
 	srv := Server{ID: 42, Name: "minecraft-1", Node: 7, Allocation: 10}
 	api := &mockPelicanAPI{
@@ -178,7 +150,7 @@ func TestWatcher_Sync_CreateNew(t *testing.T) {
 }
 
 func TestWatcher_Sync_RemoveOrphaned(t *testing.T) {
-	mgr, _, _ := newTestTunnelManager()
+	mgr, _ := newTestTunnelManager()
 
 	// Pre-populate a pelican tunnel for port 25565.
 	allocID := 10
@@ -217,7 +189,7 @@ func TestWatcher_Sync_RemoveOrphaned(t *testing.T) {
 
 func TestWatcher_ProtocolMapping(t *testing.T) {
 	// protocolFor with no overrides should return the default protocol.
-	mgr, _, _ := newTestTunnelManager()
+	mgr, _ := newTestTunnelManager()
 	cfg := defaultWatcherConfig()
 	cfg.DefaultProto = "tcp"
 	cfg.PortProtocols = nil

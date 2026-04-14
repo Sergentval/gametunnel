@@ -77,11 +77,18 @@ func serverRun(args []string) {
 	}
 	serverIPWithMask := fmt.Sprintf("%s/%d", serverIP.String(), subnetPrefixLen(cfg.WireGuard.Subnet))
 
+	// WireGuard FwMark: a unique mark applied to WG's own UDP transport packets
+	// so that a policy routing rule can send them via the main table (normal
+	// internet routing) instead of the game-traffic table. This prevents a
+	// routing loop (game fwmark → table 100 → wg-gt → WG UDP → fwmark → loop).
+	const wgFwMark = 0x51820
+
 	if err := wgMgr.Setup(
 		cfg.WireGuard.Interface,
 		cfg.WireGuard.PrivateKey,
 		cfg.WireGuard.ListenPort,
 		serverIPWithMask,
+		wgFwMark,
 	); err != nil {
 		slog.Error("setup wireguard interface", "error", err)
 		os.Exit(1)
@@ -99,19 +106,19 @@ func serverRun(args []string) {
 		os.Exit(1)
 	}
 
-	// Clear the game-traffic fwmark on GRE outer packets to prevent routing loops.
-	if err := routing.EnsureGREMarkClear(mark); err != nil {
-		slog.Error("ensure GRE mark clear", "error", err)
+	// Add a policy routing rule so WireGuard's own UDP transport packets
+	// (marked with wgFwMark) use the main table instead of the game-traffic table.
+	if err := routing.EnsureWGFwMarkRule(wgFwMark); err != nil {
+		slog.Error("ensure WireGuard fwmark rule", "error", err)
 		os.Exit(1)
 	}
 
-	// Enable accept_local globally so GRE reply packets are accepted.
+	// Enable accept_local globally so reply packets are accepted.
 	if err := netutil.SetSysctl("net.ipv4.conf.all.accept_local", "1"); err != nil {
 		slog.Warn("set accept_local globally", "error", err)
 	}
 
-	// ── GRE + MARK managers ────────────────────────────────────────────────
-	greMgr := netutil.NewGREManager()
+	// ── MARK + routing managers ────────────────────────────────────────────
 	routingMgr := routing.NewManager()
 
 	tproxyMgr, err := tproxy.NewManager()
@@ -120,7 +127,7 @@ func serverRun(args []string) {
 		os.Exit(1)
 	}
 
-	tunnelMgr := tunnel.NewManager(greMgr, tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP)
+	tunnelMgr := tunnel.NewManager(tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP, cfg.WireGuard.Interface)
 
 	// ── Agent registry ──────────────────────────────────────────────────────
 	publicIP := os.Getenv("PUBLIC_IP")
@@ -149,45 +156,25 @@ func serverRun(args []string) {
 	tunnelMgr.LoadFromState(restoredTunnels)
 
 	// ── Re-create kernel resources for restored tunnels ─────────────────────
-	// After a restart, state.json has tunnel records but the kernel
-	// has no GRE interfaces or iptables rules. Re-apply them.
+	// After a restart, state.json has tunnel records but the kernel has no
+	// iptables rules. WireGuard is already up; just re-apply MARK rules and
+	// the forward route.
 	for _, t := range tunnelMgr.List() {
 		if t.Status != models.TunnelStatusActive {
 			continue
-		}
-		// Resolve agent IP for GRE endpoint
-		a, ok := registry.GetAgent(t.AgentID)
-		if !ok {
-			slog.Warn("tunnel references unknown agent, skipping", "tunnel_id", t.ID, "agent_id", t.AgentID)
-			continue
-		}
-		agentIP := net.ParseIP(a.AssignedIP)
-
-		// Re-create GRE interface
-		greCfg := models.GREConfig{
-			Name:     t.GREInterface,
-			LocalIP:  serverIP,
-			RemoteIP: agentIP,
-		}
-		if err := greMgr.CreateTunnel(greCfg); err != nil {
-			slog.Warn("re-create GRE interface", "interface", t.GREInterface, "error", err)
 		}
 
 		// Re-create MARK rule
 		if err := tproxyMgr.AddRule(string(t.Protocol), t.PublicPort, cfg.TProxy.Mark); err != nil {
 			slog.Warn("re-create MARK rule", "port", t.PublicPort, "error", err)
 		}
-
-		// Re-create GRE forward route and FORWARD rules.
-		if err := routing.EnsureGREForwardRoute(cfg.TProxy.RoutingTable, t.GREInterface); err != nil {
-			slog.Warn("re-create GRE forward route", "interface", t.GREInterface, "error", err)
-		}
-		if err := routing.EnsureForwardRules(t.GREInterface); err != nil {
-			slog.Warn("re-create FORWARD rules", "interface", t.GREInterface, "error", err)
-		}
-		if err := netutil.EnsureGREsysctls(t.GREInterface); err != nil {
-			slog.Warn("re-set GRE sysctls", "interface", t.GREInterface, "error", err)
-		}
+	}
+	// Re-create the shared forward route and FORWARD rules once (not per-tunnel).
+	if err := routing.EnsureForwardRoute(cfg.TProxy.RoutingTable, cfg.WireGuard.Interface); err != nil {
+		slog.Warn("re-create forward route", "interface", cfg.WireGuard.Interface, "error", err)
+	}
+	if err := routing.EnsureForwardRules(cfg.WireGuard.Interface); err != nil {
+		slog.Warn("re-create FORWARD rules", "interface", cfg.WireGuard.Interface, "error", err)
 	}
 	restoredCount := 0
 	for _, t := range tunnelMgr.List() {
@@ -299,9 +286,11 @@ func serverRun(args []string) {
 	if err := routing.CleanupTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
 		slog.Warn("cleanup tproxy routing", "error", err)
 	}
-	if err := routing.CleanupGREMarkClear(mark); err != nil {
-		slog.Warn("cleanup GRE mark clear", "error", err)
+	if err := routing.CleanupWGFwMarkRule(wgFwMark); err != nil {
+		slog.Warn("cleanup WireGuard fwmark rule", "error", err)
 	}
+	_ = routing.CleanupForwardRules(cfg.WireGuard.Interface)
+	_ = routing.CleanupForwardRoute(cfg.TProxy.RoutingTable)
 
 	// Persist current state.
 	for _, a := range registry.ListAgents() {
