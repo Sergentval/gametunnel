@@ -46,7 +46,7 @@ var _ routing.Manager = (*mockRouting)(nil)
 func newTestManager() (*Manager, *mockTPROXY) {
 	tp := newMockTPROXY()
 	rt := &mockRouting{}
-	mgr := NewManager(tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"), "wg-gt")
+	mgr := NewManager(tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"), "wg-gt", nil)
 	return mgr, tp
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/Sergentval/gametunnel/internal/agentctl"
 	"github.com/Sergentval/gametunnel/internal/config"
 	"github.com/Sergentval/gametunnel/internal/netutil"
+	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/routing"
 )
 
@@ -67,6 +68,15 @@ func agentRun(args []string) {
 	// ── Routing ────────────────────────────────────────────────────────────
 	routingMgr := routing.NewManager()
 
+	// ── nftables connection (optional) ──────────────────────────────────────
+	var nftConn *nftconn.Conn
+	if c, err := nftconn.New(); err == nil {
+		nftConn = c
+		slog.Info("agent: using nftables backend")
+	} else {
+		slog.Warn("nftables not available on agent, using iptables fallback", "error", err)
+	}
+
 	// ── API client + controller ─────────────────────────────────────────────
 	client := agentctl.NewClient(cfg.Agent.ServerURL, cfg.Agent.Token)
 	ctrl := agentctl.NewController(
@@ -79,6 +89,7 @@ func agentRun(args []string) {
 		cfg.Routing.ReturnTable,
 		cfg.Routing.DockerBridge,
 		cfg.WireGuard.KeepaliveSeconds,
+		nftConn,
 	)
 
 	// ── Registration with retry ─────────────────────────────────────────────
@@ -115,5 +126,13 @@ func agentRun(args []string) {
 	// Wait for the run loop goroutine to fully exit before cleaning up state.
 	ctrl.Wait()
 	ctrl.Cleanup()
+
+	// Delete the nftables table (removes all chains/rules atomically).
+	if nftConn != nil {
+		if err := nftConn.Cleanup(); err != nil {
+			slog.Warn("cleanup nftables table", "error", err)
+		}
+	}
+
 	slog.Info("shutdown complete")
 }

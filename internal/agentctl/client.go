@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/gorilla/websocket"
 )
 
 // RegisterResponse holds the server's response to a successful registration.
@@ -96,6 +98,28 @@ func (c *Client) ListTunnels(agentID string) ([]models.Tunnel, error) {
 		return nil, fmt.Errorf("list tunnels: decode response: %w", err)
 	}
 	return tunnels, nil
+}
+
+// ConnectWS dials a WebSocket connection to GET /agents/{id}/ws.
+// The caller is responsible for closing the returned connection.
+func (c *Client) ConnectWS(agentID string) (*websocket.Conn, error) {
+	// Convert http(s):// base URL to ws(s)://.
+	wsURL := c.baseURL + "/agents/" + agentID + "/ws"
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+c.token)
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+
+	conn, _, err := dialer.Dial(wsURL, header)
+	if err != nil {
+		return nil, fmt.Errorf("dial ws %s: %w", wsURL, err)
+	}
+	return conn, nil
 }
 
 // doRequest builds and executes an HTTP request with the Bearer token and JSON

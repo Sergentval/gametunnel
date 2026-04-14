@@ -19,6 +19,7 @@ type Dependencies struct {
 	TunnelManager *tunnel.Manager
 	Store         *state.Store
 	StartTime     time.Time
+	WSHub         *WSHub
 }
 
 // NewRouter constructs an http.Handler with all API routes registered.
@@ -40,9 +41,16 @@ func NewRouter(deps Dependencies) http.Handler {
 		config:    deps.Config,
 	}
 
+	wsH := &WSHandler{
+		hub:      deps.WSHub,
+		registry: deps.Registry,
+		config:   deps.Config,
+	}
+
 	// Agent routes (all require auth).
 	mux.Handle("POST /agents/register", auth(http.HandlerFunc(agentH.Register)))
 	mux.Handle("POST /agents/{id}/heartbeat", auth(http.HandlerFunc(agentH.Heartbeat)))
+	mux.Handle("GET /agents/{id}/ws", auth(http.HandlerFunc(wsH.ServeWS)))
 	mux.Handle("DELETE /agents/{id}", auth(http.HandlerFunc(agentH.Deregister)))
 	mux.Handle("GET /agents", auth(http.HandlerFunc(agentH.List)))
 

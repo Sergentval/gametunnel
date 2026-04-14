@@ -32,20 +32,27 @@ type Manager struct {
 	mu          sync.Mutex
 	tproxy      tproxy.Manager
 	routingMgr  routing.Manager
+	nftFwd      *routing.NFTForwardRules
 	mark        string
 	table       int
 	localIP     net.IP
 	wgInterface string
 	tunnels     map[string]models.Tunnel
 	portUsed    map[int]string // port → tunnel ID
+
+	// OnTunnelChange is an optional callback invoked after a tunnel is created
+	// or deleted. The event string is "tunnel_created" or "tunnel_deleted".
+	OnTunnelChange func(event string, tunnel models.Tunnel)
 }
 
 // NewManager creates a Manager with the provided dependencies.
 // wgInterface is the WireGuard interface name used to forward game traffic.
-func NewManager(tp tproxy.Manager, rt routing.Manager, mark string, table int, localIP net.IP, wgInterface string) *Manager {
+// nftFwd is an optional nftables forward rule manager; when nil, iptables fallback is used.
+func NewManager(tp tproxy.Manager, rt routing.Manager, mark string, table int, localIP net.IP, wgInterface string, nftFwd *routing.NFTForwardRules) *Manager {
 	return &Manager{
 		tproxy:      tp,
 		routingMgr:  rt,
+		nftFwd:      nftFwd,
 		mark:        mark,
 		table:       table,
 		localIP:     localIP,
@@ -85,7 +92,7 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	}
 
 	// Add FORWARD accept rules for traffic between public interface and WireGuard.
-	if err := routing.EnsureForwardRules(m.wgInterface); err != nil {
+	if err := routing.EnsureForwardRules(m.wgInterface, m.nftFwd); err != nil {
 		_ = err // non-fatal: forwarding may still work if policy is ACCEPT
 	}
 
@@ -106,6 +113,10 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 
 	m.tunnels[id] = t
 	m.portUsed[req.PublicPort] = id
+
+	if m.OnTunnelChange != nil {
+		m.OnTunnelChange("tunnel_created", t)
+	}
 
 	return t, nil
 }
@@ -128,6 +139,10 @@ func (m *Manager) Delete(id string) error {
 
 	delete(m.tunnels, id)
 	delete(m.portUsed, t.PublicPort)
+
+	if m.OnTunnelChange != nil {
+		m.OnTunnelChange("tunnel_deleted", t)
+	}
 
 	return nil
 }

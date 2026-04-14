@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/netutil"
 	"github.com/Sergentval/gametunnel/internal/routing"
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/gorilla/websocket"
 	"github.com/vishvananda/netlink"
 )
 
@@ -37,6 +39,8 @@ type Controller struct {
 	localIP  net.IP
 	serverIP net.IP
 
+	nftAgent *nftAgent // nil when using iptables fallback
+
 	activeTunnels       map[string]models.Tunnel
 	containerIPs        map[string]string // tunnel ID → container IP
 	routeRefCount       int
@@ -51,6 +55,8 @@ type Controller struct {
 // dockerBridge is the Docker bridge interface name (e.g. "pelican0") used for
 // connmark-based reply routing.
 // keepaliveSeconds is the WireGuard persistent keepalive interval.
+// nftConn is an optional shared nftables connection; when non-nil, native
+// nftables netlink is used instead of forking iptables.
 func NewController(
 	client *Client,
 	agentID string,
@@ -61,8 +67,9 @@ func NewController(
 	returnTable int,
 	dockerBridge string,
 	keepaliveSeconds int,
+	nftConn *nftconn.Conn,
 ) *Controller {
-	return &Controller{
+	ctrl := &Controller{
 		client:           client,
 		agentID:          agentID,
 		heartbeatSecs:    heartbeatSecs,
@@ -76,6 +83,10 @@ func NewController(
 		containerIPs:     make(map[string]string),
 		stopCh:           make(chan struct{}),
 	}
+	if nftConn != nil {
+		ctrl.nftAgent = newNFTAgent(nftConn, wgIface, dockerBridge)
+	}
+	return ctrl
 }
 
 // Register calls the server's register endpoint, stores the assigned IP,
@@ -135,23 +146,156 @@ func (c *Controller) Wait() {
 	c.loopWg.Wait()
 }
 
-// runLoop performs an initial heartbeat+sync then ticks at heartbeatSecs until
-// the stop channel is closed.
+// runLoop tries to maintain a WebSocket connection for real-time tunnel events.
+// When WebSocket is unavailable it falls back to HTTP polling, then retries WS.
 func (c *Controller) runLoop() {
 	defer c.loopWg.Done()
 
+	for {
+		err := c.runWebSocket()
+		if err != nil {
+			slog.Warn("websocket disconnected, falling back to polling", "error", err)
+		}
+		// Fall back to polling until WS reconnects.
+		if c.runPollingUntilWS() {
+			return // stop signal received
+		}
+	}
+}
+
+// runWebSocket connects via WebSocket and processes real-time tunnel events.
+// It returns when the connection is lost or an error occurs.
+func (c *Controller) runWebSocket() error {
+	conn, err := c.client.ConnectWS(c.agentID)
+	if err != nil {
+		return fmt.Errorf("connect ws: %w", err)
+	}
+	defer conn.Close()
+
+	slog.Info("websocket connected")
+
+	// Start pinger goroutine (replaces HTTP heartbeat).
+	pingDone := make(chan struct{})
+	go func() {
+		defer close(pingDone)
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.stopCh:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(
+					websocket.PingMessage, nil,
+					time.Now().Add(5*time.Second),
+				); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	// Full sync on connect.
 	c.heartbeatAndSync()
 
-	ticker := time.NewTicker(time.Duration(c.heartbeatSecs) * time.Second)
-	defer ticker.Stop()
+	// Periodic full-sync ticker (consistency check every 60s).
+	syncTicker := time.NewTicker(60 * time.Second)
+	defer syncTicker.Stop()
+
+	// Read events in a goroutine, forward through a channel.
+	type readResult struct {
+		event models.WSEvent
+		err   error
+	}
+	eventCh := make(chan readResult, 1)
+
+	go func() {
+		for {
+			var event models.WSEvent
+			err := conn.ReadJSON(&event)
+			eventCh <- readResult{event: event, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
 
 	for {
 		select {
 		case <-c.stopCh:
-			return
-		case <-ticker.C:
+			_ = conn.WriteMessage(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			)
+			return nil
+
+		case res := <-eventCh:
+			if res.err != nil {
+				return fmt.Errorf("read ws event: %w", res.err)
+			}
+			c.handleWSEvent(res.event)
+
+		case <-syncTicker.C:
 			c.heartbeatAndSync()
 		}
+	}
+}
+
+// handleWSEvent processes a single WebSocket event from the server.
+func (c *Controller) handleWSEvent(event models.WSEvent) {
+	switch event.Type {
+	case "tunnel_created":
+		if event.Tunnel != nil {
+			tunnels := c.getActiveTunnelList()
+			tunnels = append(tunnels, *event.Tunnel)
+			c.syncTunnels(tunnels)
+		}
+	case "tunnel_deleted":
+		if event.Tunnel != nil {
+			c.handleTunnelDeleted(*event.Tunnel)
+		}
+	case "full_sync":
+		c.heartbeatAndSync()
+	}
+}
+
+// runPollingUntilWS polls via HTTP for a few cycles then returns false to retry
+// WebSocket, or true if a stop signal was received.
+func (c *Controller) runPollingUntilWS() bool {
+	ticker := time.NewTicker(time.Duration(c.heartbeatSecs) * time.Second)
+	defer ticker.Stop()
+	attempts := 0
+
+	for {
+		select {
+		case <-c.stopCh:
+			return true
+		case <-ticker.C:
+			c.heartbeatAndSync()
+			attempts++
+			if attempts >= 3 {
+				return false // try WS again
+			}
+		}
+	}
+}
+
+// getActiveTunnelList returns a snapshot of the currently active tunnels as a slice.
+func (c *Controller) getActiveTunnelList() []models.Tunnel {
+	tunnels := make([]models.Tunnel, 0, len(c.activeTunnels))
+	for _, t := range c.activeTunnels {
+		tunnels = append(tunnels, t)
+	}
+	return tunnels
+}
+
+// handleTunnelDeleted removes a specific tunnel by ID.
+func (c *Controller) handleTunnelDeleted(t models.Tunnel) {
+	if _, exists := c.activeTunnels[t.ID]; exists {
+		if err := c.removeTunnel(t); err != nil {
+			slog.Error("remove tunnel from ws event", "tunnel_id", t.ID, "error", err)
+		}
+		delete(c.activeTunnels, t.ID)
 	}
 }
 
@@ -275,10 +419,19 @@ func (c *Controller) detectContainerIP(port int) string {
 	return ""
 }
 
-// setupDNAT adds iptables DNAT and POSTROUTING RETURN rules for a tunnel.
-// Rules are port-specific because the WireGuard interface carries both admin
-// traffic (SSH, heartbeat) and game traffic.
+// setupDNAT adds DNAT and POSTROUTING RETURN rules for a tunnel.
+// Uses nftables when available, falling back to iptables.
 func (c *Controller) setupDNAT(t models.Tunnel, containerIP string) {
+	if c.nftAgent != nil {
+		if err := c.nftAgent.setupDNAT(t, containerIP); err != nil {
+			slog.Warn("nftables DNAT rule", "error", err)
+		}
+		if err := c.nftAgent.setupPostRoutingReturn(); err != nil {
+			slog.Warn("nftables POSTROUTING RETURN rule", "error", err)
+		}
+		return
+	}
+
 	ipt, err := iptables.New()
 	if err != nil {
 		slog.Warn("create iptables client for DNAT", "error", err)
@@ -313,10 +466,16 @@ func (c *Controller) setupDNAT(t models.Tunnel, containerIP string) {
 	}
 }
 
-// setupForwardRules adds iptables FORWARD accept rules for the tunnel interface,
-// allowing traffic to and from the Docker bridge. Rules are inserted at
-// position 1 (top of chain) so they are evaluated before Docker's DROP rules.
+// setupForwardRules adds FORWARD accept rules for the tunnel interface.
+// Uses nftables when available, falling back to iptables.
 func (c *Controller) setupForwardRules(iface string) {
+	if c.nftAgent != nil {
+		if err := c.nftAgent.setupForwardRules(); err != nil {
+			slog.Warn("nftables FORWARD rules", "error", err)
+		}
+		return
+	}
+
 	ipt, err := iptables.New()
 	if err != nil {
 		slog.Warn("create iptables client for FORWARD rules", "error", err)
@@ -351,6 +510,27 @@ func (c *Controller) setupForwardRules(iface string) {
 //  2. On container replies via the Docker bridge, restore connmark to packet mark.
 //  3. Use fwmark 0x2 to route via the return table.
 func (c *Controller) setupConnmarkRouting(t models.Tunnel) {
+	if c.nftAgent != nil {
+		if err := c.nftAgent.setupConnmarkSet(t); err != nil {
+			slog.Warn("nftables connmark set rule", "error", err)
+		}
+		if err := c.nftAgent.setupConnmarkRestore(); err != nil {
+			slog.Warn("nftables connmark restore rule", "error", err)
+		}
+		// The fwmark policy routing rule is always via netlink (not iptables).
+		maskVal := uint32(0x2)
+		rule := netlink.NewRule()
+		rule.Mark = 0x2
+		rule.Mask = &maskVal
+		rule.Table = c.returnTable
+		rule.Priority = 199
+		_ = netlink.RuleDel(rule)
+		if err := netlink.RuleAdd(rule); err != nil {
+			slog.Warn("add fwmark rule for connmark routing", "error", err)
+		}
+		return
+	}
+
 	ipt, err := iptables.New()
 	if err != nil {
 		slog.Warn("create iptables client for connmark routing", "error", err)
@@ -393,6 +573,20 @@ func (c *Controller) setupConnmarkRouting(t models.Tunnel) {
 // cleanupConnmarkRouting removes the connmark rules and fwmark-based policy
 // routing rule installed by setupConnmarkRouting.
 func (c *Controller) cleanupConnmarkRouting() {
+	// fwmark policy rule is always netlink-based, remove it regardless of backend.
+	maskVal := uint32(0x2)
+	fwRule := netlink.NewRule()
+	fwRule.Mark = 0x2
+	fwRule.Mask = &maskVal
+	fwRule.Table = c.returnTable
+	fwRule.Priority = 199
+	_ = netlink.RuleDel(fwRule)
+
+	if c.nftAgent != nil {
+		// nftables rules are cleaned up by flushing the agent chains.
+		return
+	}
+
 	ipt, err := iptables.New()
 	if err != nil {
 		return
@@ -407,15 +601,6 @@ func (c *Controller) cleanupConnmarkRouting() {
 			_ = ipt.Delete("mangle", "PREROUTING", parts...)
 		}
 	}
-
-	// Remove fwmark rule.
-	maskVal := uint32(0x2)
-	fwRule := netlink.NewRule()
-	fwRule.Mark = 0x2
-	fwRule.Mask = &maskVal
-	fwRule.Table = c.returnTable
-	fwRule.Priority = 199
-	_ = netlink.RuleDel(fwRule)
 }
 
 // removeTunnel cleans up all iptables rules for a tunnel and decrements
@@ -450,12 +635,19 @@ func (c *Controller) removeTunnel(t models.Tunnel) error {
 // cleanupDNAT removes the DNAT rule for a tunnel. The POSTROUTING RETURN
 // rule is shared (connmark-based) and cleaned up with connmark routing.
 func (c *Controller) cleanupDNAT(t models.Tunnel) {
+	proto := string(t.Protocol)
+
+	if c.nftAgent != nil {
+		c.nftAgent.cleanupDNATForPort(t.PublicPort, proto)
+		delete(c.containerIPs, t.ID)
+		return
+	}
+
 	ipt, err := iptables.New()
 	if err != nil {
 		return
 	}
 
-	proto := string(t.Protocol)
 	portStr := fmt.Sprintf("%d", t.PublicPort)
 
 	// Try the stored container IP for a precise delete first.
@@ -493,6 +685,11 @@ func (c *Controller) cleanupDNAT(t models.Tunnel) {
 
 // cleanupForwardRules removes FORWARD accept rules for a tunnel interface.
 func (c *Controller) cleanupForwardRules(iface string) {
+	if c.nftAgent != nil {
+		// nftables forward rules are cleaned up by flushing agent chains.
+		return
+	}
+
 	ipt, err := iptables.New()
 	if err != nil {
 		return
@@ -510,11 +707,16 @@ func (c *Controller) cleanupForwardRules(iface string) {
 }
 
 // Cleanup removes all currently active tunnels. Called on shutdown.
+// When using nftables, the agent chains are flushed in one operation.
 func (c *Controller) Cleanup() {
 	for id, t := range c.activeTunnels {
 		if err := c.removeTunnel(t); err != nil {
 			slog.Error("cleanup: remove tunnel", "tunnel_id", id, "error", err)
 		}
 		delete(c.activeTunnels, id)
+	}
+
+	if c.nftAgent != nil {
+		c.nftAgent.cleanup()
 	}
 }

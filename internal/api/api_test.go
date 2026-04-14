@@ -74,7 +74,7 @@ func setupTestAPI(t *testing.T) *testEnv {
 	}
 
 	localIP := net.ParseIP("10.99.0.1")
-	tunnelMgr := tunnel.NewManager(&mockTPROXY{}, &mockRouting{}, "0x1", 100, localIP, "wg0")
+	tunnelMgr := tunnel.NewManager(&mockTPROXY{}, &mockRouting{}, "0x1", 100, localIP, "wg0", nil)
 
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	store, err := state.NewStore(stateFile)
@@ -87,6 +87,7 @@ func setupTestAPI(t *testing.T) *testEnv {
 		Registry:      registry,
 		TunnelManager: tunnelMgr,
 		Store:         store,
+		WSHub:         api.NewWSHub(),
 	}
 
 	router := api.NewRouter(deps)

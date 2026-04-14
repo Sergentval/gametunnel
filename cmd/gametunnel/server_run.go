@@ -19,6 +19,7 @@ import (
 	"github.com/Sergentval/gametunnel/internal/config"
 	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/Sergentval/gametunnel/internal/netutil"
+	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/pelican"
 	"github.com/Sergentval/gametunnel/internal/routing"
 	"github.com/Sergentval/gametunnel/internal/state"
@@ -118,16 +119,41 @@ func serverRun(args []string) {
 		slog.Warn("set accept_local globally", "error", err)
 	}
 
+	// ── nftables connection (optional) ──────────────────────────────────────
+	var nftConn *nftconn.Conn
+	if c, err := nftconn.New(); err == nil {
+		nftConn = c
+		slog.Info("server: using nftables backend")
+	} else {
+		slog.Warn("nftables not available, using iptables fallback", "error", err)
+	}
+
 	// ── MARK + routing managers ────────────────────────────────────────────
 	routingMgr := routing.NewManager()
 
-	tproxyMgr, err := tproxy.NewManager()
+	tproxyMgr, err := tproxy.NewManager(nftConn)
 	if err != nil {
 		slog.Error("init tproxy manager", "error", err)
 		os.Exit(1)
 	}
 
-	tunnelMgr := tunnel.NewManager(tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP, cfg.WireGuard.Interface)
+	var nftFwd *routing.NFTForwardRules
+	if nftConn != nil {
+		nftFwd = routing.NewNFTForwardRules(nftConn)
+	}
+
+	// ── WebSocket hub ──────────────────────────────────────────────────────
+	wsHub := api.NewWSHub()
+
+	tunnelMgr := tunnel.NewManager(tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP, cfg.WireGuard.Interface, nftFwd)
+
+	// Wire tunnel change events to the WebSocket hub.
+	tunnelMgr.OnTunnelChange = func(event string, t models.Tunnel) {
+		wsEvent := models.WSEvent{Type: event, Tunnel: &t}
+		if err := wsHub.Send(t.AgentID, wsEvent); err != nil {
+			slog.Debug("ws push tunnel event", "event", event, "agent_id", t.AgentID, "error", err)
+		}
+	}
 
 	// ── Agent registry ──────────────────────────────────────────────────────
 	publicIP := os.Getenv("PUBLIC_IP")
@@ -173,7 +199,7 @@ func serverRun(args []string) {
 	if err := routing.EnsureForwardRoute(cfg.TProxy.RoutingTable, cfg.WireGuard.Interface); err != nil {
 		slog.Warn("re-create forward route", "interface", cfg.WireGuard.Interface, "error", err)
 	}
-	if err := routing.EnsureForwardRules(cfg.WireGuard.Interface); err != nil {
+	if err := routing.EnsureForwardRules(cfg.WireGuard.Interface, nftFwd); err != nil {
 		slog.Warn("re-create FORWARD rules", "interface", cfg.WireGuard.Interface, "error", err)
 	}
 	restoredCount := 0
@@ -193,6 +219,7 @@ func serverRun(args []string) {
 		TunnelManager: tunnelMgr,
 		Store:         store,
 		StartTime:     time.Now(),
+		WSHub:         wsHub,
 	}
 	handler := api.NewRouter(deps)
 
@@ -290,8 +317,15 @@ func serverRun(args []string) {
 	if err := routing.CleanupWGFwMarkRule(wgFwMark); err != nil {
 		slog.Warn("cleanup WireGuard fwmark rule", "error", err)
 	}
-	_ = routing.CleanupForwardRules(cfg.WireGuard.Interface)
+	_ = routing.CleanupForwardRules(cfg.WireGuard.Interface, nftFwd)
 	_ = routing.CleanupForwardRoute(cfg.TProxy.RoutingTable)
+
+	// Delete the nftables table (removes all chains/rules/sets atomically).
+	if nftConn != nil {
+		if err := nftConn.Cleanup(); err != nil {
+			slog.Warn("cleanup nftables table", "error", err)
+		}
+	}
 
 	// Persist current state.
 	for _, a := range registry.ListAgents() {

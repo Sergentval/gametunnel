@@ -81,6 +81,12 @@ type WireGuardPeerConfig struct {
 	AssignedIP string
 }
 
+// WSEvent represents a real-time tunnel event pushed over WebSocket.
+type WSEvent struct {
+	Type   string  `json:"type"`             // "tunnel_created", "tunnel_deleted", "full_sync"
+	Tunnel *Tunnel `json:"tunnel,omitempty"`
+}
+
 // SanitizeGREName generates a valid Linux network interface name for a GRE tunnel.
 // The result is prefixed with "gre-", uses only lowercase alphanumeric characters and
 // dashes, collapses consecutive dashes, trims trailing dashes, and is capped at 15 chars.

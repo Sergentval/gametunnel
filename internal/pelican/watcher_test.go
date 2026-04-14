@@ -81,7 +81,7 @@ func (m *mockAgentResolver) GetAgent(id string) (models.Agent, bool) {
 func newTestTunnelManager() (*tunnel.Manager, *mockTPROXY) {
 	tp := newMockTPROXY()
 	rt := &mockRouting{}
-	mgr := tunnel.NewManager(tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"), "wg-gt")
+	mgr := tunnel.NewManager(tp, rt, "0x1", 100, net.ParseIP("10.0.0.1"), "wg-gt", nil)
 	return mgr, tp
 }
 

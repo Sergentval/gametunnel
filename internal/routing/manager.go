@@ -5,7 +5,6 @@ import (
 	"net"
 	"syscall"
 
-	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
 )
 
@@ -196,65 +195,23 @@ func CleanupForwardRoute(table int) error {
 	return nil
 }
 
-// EnsureForwardRules adds iptables FORWARD accept rules between the public
-// interface and the tunnel device (WireGuard), in both directions. Rules are
-// inserted at position 1 (top of chain) so they are evaluated before Docker's
-// DROP rules. Uses Exists+Insert for idempotency.
-func EnsureForwardRules(device string) error {
-	ipt, err := iptables.New()
-	if err != nil {
-		return fmt.Errorf("create iptables client: %w", err)
+// EnsureForwardRules adds FORWARD accept rules between the public interface
+// and the tunnel device (WireGuard), in both directions. When nftFwd is
+// non-nil, nftables is used; otherwise falls back to iptables.
+func EnsureForwardRules(device string, nftFwd *NFTForwardRules) error {
+	if nftFwd != nil {
+		return nftFwd.EnsureForwardRules(device)
 	}
-
-	// Determine the public interface: default route's output device.
-	pubIface, err := defaultRouteIface()
-	if err != nil {
-		return fmt.Errorf("detect public interface: %w", err)
-	}
-
-	// public → tunnel device
-	fwd := []string{"-i", pubIface, "-o", device, "-j", "ACCEPT"}
-	if exists, _ := ipt.Exists("filter", "FORWARD", fwd...); !exists {
-		if err := ipt.Insert("filter", "FORWARD", 1, fwd...); err != nil {
-			return fmt.Errorf("insert FORWARD rule %s→%s: %w", pubIface, device, err)
-		}
-	}
-
-	// tunnel device → public
-	rev := []string{"-i", device, "-o", pubIface, "-j", "ACCEPT"}
-	if exists, _ := ipt.Exists("filter", "FORWARD", rev...); !exists {
-		if err := ipt.Insert("filter", "FORWARD", 1, rev...); err != nil {
-			return fmt.Errorf("insert FORWARD rule %s→%s: %w", device, pubIface, err)
-		}
-	}
-
-	return nil
+	return EnsureForwardRulesIPTables(device)
 }
 
-// CleanupForwardRules removes the iptables FORWARD accept rules for a tunnel
-// device. Returns nil if the rules do not exist (idempotent).
-func CleanupForwardRules(device string) error {
-	ipt, err := iptables.New()
-	if err != nil {
-		return fmt.Errorf("create iptables client: %w", err)
+// CleanupForwardRules removes FORWARD accept rules for a tunnel device.
+// When nftFwd is non-nil, nftables is used; otherwise falls back to iptables.
+func CleanupForwardRules(device string, nftFwd *NFTForwardRules) error {
+	if nftFwd != nil {
+		return nftFwd.CleanupForwardRules()
 	}
-
-	pubIface, err := defaultRouteIface()
-	if err != nil {
-		return nil // best-effort: can't determine interface
-	}
-
-	fwd := []string{"-i", pubIface, "-o", device, "-j", "ACCEPT"}
-	if exists, _ := ipt.Exists("filter", "FORWARD", fwd...); exists {
-		_ = ipt.Delete("filter", "FORWARD", fwd...)
-	}
-
-	rev := []string{"-i", device, "-o", pubIface, "-j", "ACCEPT"}
-	if exists, _ := ipt.Exists("filter", "FORWARD", rev...); exists {
-		_ = ipt.Delete("filter", "FORWARD", rev...)
-	}
-
-	return nil
+	return CleanupForwardRulesIPTables(device)
 }
 
 // EnsureWGFwMarkRule adds a policy routing rule that sends packets with the
