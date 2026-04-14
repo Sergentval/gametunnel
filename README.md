@@ -147,7 +147,7 @@ http:
 ## Features
 
 - **Source IP preservation** — game servers see real player IPs (TCP + UDP)
-- **Kernel-level forwarding** — zero-copy packet path via iptables MARK + policy routing
+- **Kernel-level forwarding** — zero-copy packet path via iptables MARK + policy routing (TCP + UDP)
 - **One-command setup** — `server init` + `agent join <token>`
 - **Pelican Panel integration** — auto-tunnel from server allocations
 - **Single binary** — `gametunnel` does everything
@@ -183,7 +183,7 @@ Run your own: `gametunnel bench server` on one end, `gametunnel bench client --t
 
 ### VPS (Server)
 
-1. **iptables MARK** — incoming game packets are marked with fwmark `0x1` in the mangle PREROUTING chain
+1. **iptables MARK** — incoming game packets (TCP + UDP) are marked with fwmark `0x1` in the mangle PREROUTING chain
 2. **Policy routing** — marked packets are routed via a dedicated table through the GRE interface instead of being delivered locally
 3. **Local table reordering** — the kernel's local routing table is moved to a lower priority so marked packets hit the fwmark rule first
 4. **GRE encapsulation** — packets enter the GRE tunnel with original source/destination IPs preserved

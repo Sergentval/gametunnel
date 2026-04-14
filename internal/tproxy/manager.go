@@ -20,43 +20,48 @@ func NewManager() (Manager, error) {
 	return &manager{ipt: ipt}, nil
 }
 
-// AddRule inserts a MARK rule in the mangle PREROUTING chain for the given
-// protocol, destination port, and firewall mark. Marked packets are then
-// routed through GRE by policy routing (no local TPROXY socket needed).
-// The call is idempotent.
-func (m *manager) AddRule(protocol string, port int, mark string) error {
+// AddRule inserts MARK rules in the mangle PREROUTING chain for the given
+// destination port and firewall mark. Rules are created for BOTH TCP and UDP
+// regardless of the protocol hint, because game servers commonly use both
+// (e.g. Minecraft=TCP, Steam games=UDP, some use both). Idempotent.
+func (m *manager) AddRule(_ string, port int, mark string) error {
 	portStr := strconv.Itoa(port)
-	rulespec := []string{
-		"-p", protocol,
-		"--dport", portStr,
-		"-j", "MARK",
-		"--set-xmark", mark + "/" + mark,
-	}
-	if err := m.ipt.AppendUnique("mangle", "PREROUTING", rulespec...); err != nil {
-		return fmt.Errorf("add mark rule (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
+	for _, proto := range []string{"tcp", "udp"} {
+		rulespec := []string{
+			"-p", proto,
+			"--dport", portStr,
+			"-j", "MARK",
+			"--set-xmark", mark + "/" + mark,
+		}
+		if err := m.ipt.AppendUnique("mangle", "PREROUTING", rulespec...); err != nil {
+			return fmt.Errorf("add mark rule (proto=%s port=%d mark=%s): %w", proto, port, mark, err)
+		}
 	}
 	return nil
 }
 
-// RemoveRule deletes the MARK rule for the given protocol, port, and mark.
-// Returns nil if the rule does not exist (idempotent).
-func (m *manager) RemoveRule(protocol string, port int, mark string) error {
+// RemoveRule deletes the MARK rules for the given port and mark.
+// Both TCP and UDP rules are removed to match AddRule's dual-protocol behavior.
+// Returns nil if a rule does not exist (idempotent).
+func (m *manager) RemoveRule(_ string, port int, mark string) error {
 	portStr := strconv.Itoa(port)
-	rulespec := []string{
-		"-p", protocol,
-		"--dport", portStr,
-		"-j", "MARK",
-		"--set-xmark", mark + "/" + mark,
-	}
-	exists, err := m.ipt.Exists("mangle", "PREROUTING", rulespec...)
-	if err != nil {
-		return fmt.Errorf("check mark rule existence (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
-	}
-	if !exists {
-		return nil
-	}
-	if err := m.ipt.Delete("mangle", "PREROUTING", rulespec...); err != nil {
-		return fmt.Errorf("remove mark rule (proto=%s port=%d mark=%s): %w", protocol, port, mark, err)
+	for _, proto := range []string{"tcp", "udp"} {
+		rulespec := []string{
+			"-p", proto,
+			"--dport", portStr,
+			"-j", "MARK",
+			"--set-xmark", mark + "/" + mark,
+		}
+		exists, err := m.ipt.Exists("mangle", "PREROUTING", rulespec...)
+		if err != nil {
+			return fmt.Errorf("check mark rule existence (proto=%s port=%d mark=%s): %w", proto, port, mark, err)
+		}
+		if !exists {
+			continue
+		}
+		if err := m.ipt.Delete("mangle", "PREROUTING", rulespec...); err != nil {
+			return fmt.Errorf("remove mark rule (proto=%s port=%d mark=%s): %w", proto, port, mark, err)
+		}
 	}
 	return nil
 }
