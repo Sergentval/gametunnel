@@ -369,14 +369,15 @@ func (c *Controller) createTunnel(t models.Tunnel) error {
 		slog.Warn("no Docker container found for port, skipping DNAT", "port", t.PublicPort)
 	}
 
-	// Add FORWARD rules for the WireGuard interface.
-	c.setupForwardRules(c.wgIface)
-
-	// Add connmark-based reply routing (ref-counted).
+	// Shared setup (once per agent): FORWARD rules, connmark restore, fwmark ip rule.
 	if c.connmarkRefCount == 0 {
-		c.setupConnmarkRouting(t)
+		c.setupForwardRules(c.wgIface)
+		c.setupSharedConnmarkRouting()
 	}
 	c.connmarkRefCount++
+
+	// Per-tunnel connmark SET rule (one per port, TCP + UDP).
+	c.setupConnmarkRouting(t)
 
 	slog.Info("tunnel created", "name", t.Name, "tunnel_id", t.ID)
 	return nil
@@ -509,11 +510,10 @@ func (c *Controller) setupForwardRules(iface string) {
 //  1. Mark incoming game traffic on wg0 with connmark 0x2 (port-specific).
 //  2. On container replies via the Docker bridge, restore connmark to packet mark.
 //  3. Use fwmark 0x2 to route via the return table.
-func (c *Controller) setupConnmarkRouting(t models.Tunnel) {
+//
+// setupSharedConnmarkRouting sets up items 2 and 3 (called once per agent).
+func (c *Controller) setupSharedConnmarkRouting() {
 	if c.nftAgent != nil {
-		if err := c.nftAgent.setupConnmarkSet(t); err != nil {
-			slog.Warn("nftables connmark set rule", "error", err)
-		}
 		if err := c.nftAgent.setupConnmarkRestore(); err != nil {
 			slog.Warn("nftables connmark restore rule", "error", err)
 		}
@@ -527,6 +527,17 @@ func (c *Controller) setupConnmarkRouting(t models.Tunnel) {
 		_ = netlink.RuleDel(rule)
 		if err := netlink.RuleAdd(rule); err != nil {
 			slog.Warn("add fwmark rule for connmark routing", "error", err)
+		}
+		return
+	}
+}
+
+// setupConnmarkRouting adds the per-tunnel connmark SET rule (item 1).
+// Called for every tunnel so each port gets its own mark-on-ingress rule.
+func (c *Controller) setupConnmarkRouting(t models.Tunnel) {
+	if c.nftAgent != nil {
+		if err := c.nftAgent.setupConnmarkSet(t); err != nil {
+			slog.Warn("nftables connmark set rule", "error", err)
 		}
 		return
 	}

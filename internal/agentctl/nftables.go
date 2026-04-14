@@ -113,23 +113,24 @@ func (a *nftAgent) setupDNAT(t models.Tunnel, containerIP string) error {
 		return fmt.Errorf("invalid container IP: %s", containerIP)
 	}
 
-	proto := protoToByte(string(t.Protocol))
+	// DNAT for both TCP and UDP — game servers often use both (Steam query
+	// on UDP, game on UDP, RCON on TCP, etc.).
+	for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+		var exprs []expr.Any
+		exprs = append(exprs, nftconn.MatchIIFName(a.wgIface)...)
+		exprs = append(exprs, nftconn.MatchProto(proto)...)
+		exprs = append(exprs, nftconn.MatchDport(uint16(t.PublicPort))...)
+		exprs = append(exprs, nftconn.DNATExprs(ip, uint16(t.PublicPort))...)
 
-	// DNAT rule: -i wg0 -p <proto> --dport <port> -j DNAT --to-destination <ip>:<port>
-	var exprs []expr.Any
-	exprs = append(exprs, nftconn.MatchIIFName(a.wgIface)...)
-	exprs = append(exprs, nftconn.MatchProto(proto)...)
-	exprs = append(exprs, nftconn.MatchDport(uint16(t.PublicPort))...)
-	exprs = append(exprs, nftconn.DNATExprs(ip, uint16(t.PublicPort))...)
-
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: a.natChain,
-		Exprs: exprs,
-	})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: a.natChain,
+			Exprs: exprs,
+		})
+	}
 
 	if err := nft.Flush(); err != nil {
-		return fmt.Errorf("flush DNAT rule: %w", err)
+		return fmt.Errorf("flush DNAT rules: %w", err)
 	}
 
 	return nil
@@ -147,6 +148,9 @@ func (a *nftAgent) setupPostRoutingReturn() error {
 
 	table := a.conn.Table()
 	nft := a.conn.Raw()
+
+	// Flush existing rules first (idempotency).
+	nft.FlushChain(a.postChain)
 
 	// -o wg0 -m connmark --mark 0x2/0x2 -j RETURN
 	var exprs []expr.Any
@@ -168,6 +172,8 @@ func (a *nftAgent) setupPostRoutingReturn() error {
 }
 
 // setupForwardRules adds FORWARD accept rules for the WireGuard interface.
+// Idempotent: flushes the chain first to avoid duplicate rules from
+// re-entrant calls (e.g. WS reconnect triggering re-sync).
 func (a *nftAgent) setupForwardRules() error {
 	if err := a.ensureChains(); err != nil {
 		return err
@@ -178,6 +184,9 @@ func (a *nftAgent) setupForwardRules() error {
 
 	table := a.conn.Table()
 	nft := a.conn.Raw()
+
+	// Flush existing rules first (idempotency).
+	nft.FlushChain(a.fwdChain)
 
 	// -i wg0 -j ACCEPT
 	var fwdExprs []expr.Any
@@ -219,23 +228,23 @@ func (a *nftAgent) setupConnmarkSet(t models.Tunnel) error {
 	table := a.conn.Table()
 	nft := a.conn.Raw()
 
-	proto := protoToByte(string(t.Protocol))
+	// Connmark set for both TCP and UDP.
+	for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+		var exprs []expr.Any
+		exprs = append(exprs, nftconn.MatchIIFName(a.wgIface)...)
+		exprs = append(exprs, nftconn.MatchProto(proto)...)
+		exprs = append(exprs, nftconn.MatchDport(uint16(t.PublicPort))...)
+		exprs = append(exprs, nftconn.ConnmarkSetExprs(0x2, 0x2)...)
 
-	// -i wg0 -p <proto> --dport <port> -j CONNMARK --set-mark 0x2/0x2
-	var exprs []expr.Any
-	exprs = append(exprs, nftconn.MatchIIFName(a.wgIface)...)
-	exprs = append(exprs, nftconn.MatchProto(proto)...)
-	exprs = append(exprs, nftconn.MatchDport(uint16(t.PublicPort))...)
-	exprs = append(exprs, nftconn.ConnmarkSetExprs(0x2, 0x2)...)
-
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: a.mangleChain,
-		Exprs: exprs,
-	})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: a.mangleChain,
+			Exprs: exprs,
+		})
+	}
 
 	if err := nft.Flush(); err != nil {
-		return fmt.Errorf("flush connmark set rule: %w", err)
+		return fmt.Errorf("flush connmark set rules: %w", err)
 	}
 
 	return nil
@@ -252,6 +261,16 @@ func (a *nftAgent) setupConnmarkRestore() error {
 
 	table := a.conn.Table()
 	nft := a.conn.Raw()
+
+	// Remove any existing connmark-restore rule on the Docker bridge before
+	// adding a fresh one (idempotency for re-entrant calls).
+	if rules, err := nft.GetRules(table, a.mangleChain); err == nil {
+		for _, r := range rules {
+			if ruleMatchesIFName(r, a.dockerBridge) {
+				_ = nft.DelRule(r)
+			}
+		}
+	}
 
 	// -i <dockerBridge> => meta mark set ct mark & 0x2
 	var exprs []expr.Any
@@ -316,6 +335,21 @@ func (a *nftAgent) cleanupDNATForPort(port int, proto string) {
 		}
 	}
 	_ = nft.Flush()
+}
+
+// ruleMatchesIFName checks if a rule contains a meta iifname comparison
+// matching the given interface name.
+func ruleMatchesIFName(rule *nftables.Rule, ifname string) bool {
+	target := make([]byte, 16) // IFNAMSIZ
+	copy(target, ifname)
+	for _, e := range rule.Exprs {
+		if cmp, ok := e.(*expr.Cmp); ok {
+			if len(cmp.Data) == 16 && string(cmp.Data) == string(target) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ruleMatchesPort checks if a rule's expressions contain a port comparison

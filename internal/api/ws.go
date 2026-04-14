@@ -49,25 +49,31 @@ func (h *WSHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	h.hub.Register(agentID, conn)
 	slog.Info("websocket connected", "agent_id", agentID)
 
-	// Update heartbeat on pong.
-	conn.SetPongHandler(func(appData string) error {
+	const readTimeout = 60 * time.Second
+
+	// Ping from agent: reset deadline, update heartbeat, reply with pong.
+	conn.SetPingHandler(func(appData string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		if err := h.registry.Heartbeat(agentID); err != nil {
-			slog.Warn("ws pong heartbeat failed", "agent_id", agentID, "error", err)
+			slog.Warn("ws ping heartbeat failed", "agent_id", agentID, "error", err)
 		}
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+	})
+
+	// Pong from agent (if agent responds to server pings).
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 
 	// Read loop: keeps the connection alive and detects disconnects.
-	// We don't expect meaningful messages from the agent on this channel;
-	// the loop simply drains reads so pong frames are processed.
-	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	for {
 		_, _, err := conn.ReadMessage()
 		if err != nil {
 			break
 		}
-		// Reset deadline on any successful read (ping/pong resets it too).
-		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
 	}
 
 	h.hub.Unregister(agentID)
