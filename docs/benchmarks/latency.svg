@@ -4,46 +4,46 @@
 <text x="400.0" y="48" text-anchor="middle" fill="#7d8590" font-size="11">OVH VPS (Gravelines) ↔ Home Server (Paris) via WireGuard | 200 packets/size</text>
 <line x1="65" y1="340.0" x2="770" y2="340.0" stroke="#21262d" stroke-width="1"/>
 <text x="57" y="344.0" text-anchor="end" fill="#7d8590" font-size="11">0ms</text>
-<line x1="65" y1="295.5966697502313" x2="770" y2="295.5966697502313" stroke="#21262d" stroke-width="1"/>
-<text x="57" y="299.5966697502313" text-anchor="end" fill="#7d8590" font-size="11">3ms</text>
-<line x1="65" y1="251.1933395004625" x2="770" y2="251.1933395004625" stroke="#21262d" stroke-width="1"/>
-<text x="57" y="255.1933395004625" text-anchor="end" fill="#7d8590" font-size="11">6ms</text>
-<line x1="65" y1="206.79000925069377" x2="770" y2="206.79000925069377" stroke="#21262d" stroke-width="1"/>
-<text x="57" y="210.79000925069377" text-anchor="end" fill="#7d8590" font-size="11">9ms</text>
-<line x1="65" y1="162.38667900092503" x2="770" y2="162.38667900092503" stroke="#21262d" stroke-width="1"/>
-<text x="57" y="166.38667900092503" text-anchor="end" fill="#7d8590" font-size="11">12ms</text>
-<line x1="65" y1="117.98334875115631" x2="770" y2="117.98334875115631" stroke="#21262d" stroke-width="1"/>
-<text x="57" y="121.98334875115631" text-anchor="end" fill="#7d8590" font-size="11">15ms</text>
+<line x1="65" y1="293.76995046780405" x2="770" y2="293.76995046780405" stroke="#21262d" stroke-width="1"/>
+<text x="57" y="297.76995046780405" text-anchor="end" fill="#7d8590" font-size="11">3ms</text>
+<line x1="65" y1="247.53990093560813" x2="770" y2="247.53990093560813" stroke="#21262d" stroke-width="1"/>
+<text x="57" y="251.53990093560813" text-anchor="end" fill="#7d8590" font-size="11">6ms</text>
+<line x1="65" y1="201.3098514034122" x2="770" y2="201.3098514034122" stroke="#21262d" stroke-width="1"/>
+<text x="57" y="205.3098514034122" text-anchor="end" fill="#7d8590" font-size="11">9ms</text>
+<line x1="65" y1="155.07980187121626" x2="770" y2="155.07980187121626" stroke="#21262d" stroke-width="1"/>
+<text x="57" y="159.07980187121626" text-anchor="end" fill="#7d8590" font-size="11">12ms</text>
+<line x1="65" y1="108.84975233902034" x2="770" y2="108.84975233902034" stroke="#21262d" stroke-width="1"/>
+<text x="57" y="112.84975233902034" text-anchor="end" fill="#7d8590" font-size="11">15ms</text>
 <text x="14" y="200.0" text-anchor="middle" fill="#7d8590" font-size="11" transform="rotate(-90 14 200.0)">Latency (ms)</text>
-<rect x="86.15" y="213.45050878815908" width="22.674999999999997" height="126.54949121184092" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
-<text x="135.5" y="207.45050878815908" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.6ms</text>
-<rect x="110.825" y="215.81868640148008" width="22.674999999999997" height="124.18131359851992" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
-<rect x="135.5" y="201.75763182238666" width="22.674999999999997" height="138.24236817761334" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
-<rect x="160.175" y="171.85938945420907" width="22.674999999999997" height="168.14061054579093" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
+<rect x="86.15" y="209.3230599889928" width="22.674999999999997" height="130.6769400110072" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
+<text x="135.5" y="203.3230599889928" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.5ms</text>
+<rect x="110.825" y="209.9394606494221" width="22.674999999999997" height="130.0605393505779" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
+<rect x="135.5" y="200.07705008255363" width="22.674999999999997" height="139.92294991744637" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
+<rect x="160.175" y="157.85360484314805" width="22.674999999999997" height="182.14639515685195" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
 <text x="135.5" y="360" text-anchor="middle" fill="#c9d1d9" font-size="12" font-weight="500">64B</text>
-<rect x="227.15" y="213.00647548566138" width="22.674999999999997" height="126.99352451433862" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
-<text x="276.5" y="207.00647548566138" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.6ms</text>
-<rect x="251.825" y="215.52266419981498" width="22.674999999999997" height="124.47733580018502" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
-<rect x="276.5" y="204.42183163737278" width="22.674999999999997" height="135.57816836262722" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
-<rect x="301.175" y="174.22756706753003" width="22.674999999999997" height="165.77243293246997" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
+<rect x="227.15" y="210.5558613098514" width="22.674999999999997" height="129.4441386901486" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
+<text x="276.5" y="204.5558613098514" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.4ms</text>
+<rect x="251.825" y="210.864061640066" width="22.674999999999997" height="129.135938359934" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
+<rect x="276.5" y="204.08365437534394" width="22.674999999999997" height="135.91634562465606" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
+<rect x="301.175" y="181.5850302696753" width="22.674999999999997" height="158.4149697303247" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
 <text x="276.5" y="360" text-anchor="middle" fill="#c9d1d9" font-size="12" font-weight="500">256B</text>
-<rect x="368.15" y="207.5300647548566" width="22.674999999999997" height="132.4699352451434" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
-<text x="417.5" y="201.5300647548566" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.9ms</text>
-<rect x="392.825" y="214.1905642923219" width="22.674999999999997" height="125.80943570767809" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
-<rect x="417.5" y="161.20259019426456" width="22.674999999999997" height="178.79740980573544" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
+<rect x="368.15" y="207.01155751238304" width="22.674999999999997" height="132.98844248761696" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
+<text x="417.5" y="201.01155751238304" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.6ms</text>
+<rect x="392.825" y="209.9394606494221" width="22.674999999999997" height="130.0605393505779" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
+<rect x="417.5" y="183.2801320858558" width="22.674999999999997" height="156.7198679141442" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
 <rect x="442.17499999999995" y="96.52173913043475" width="22.674999999999997" height="243.47826086956525" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
 <text x="417.5" y="360" text-anchor="middle" fill="#c9d1d9" font-size="12" font-weight="500">512B</text>
-<rect x="509.15" y="214.04255319148933" width="22.674999999999997" height="125.95744680851067" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
-<text x="558.5" y="208.04255319148933" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.5ms</text>
-<rect x="533.8249999999999" y="215.3746530989824" width="22.674999999999997" height="124.6253469010176" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
-<rect x="558.5" y="203.82978723404253" width="22.674999999999997" height="136.17021276595747" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
-<rect x="583.175" y="179.5559666975023" width="22.674999999999997" height="160.4440333024977" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
+<rect x="509.15" y="209.7853604843148" width="22.674999999999997" height="130.2146395156852" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
+<text x="558.5" y="203.7853604843148" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.4ms</text>
+<rect x="533.8249999999999" y="210.40176114474406" width="22.674999999999997" height="129.59823885525594" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
+<rect x="558.5" y="204.08365437534394" width="22.674999999999997" height="135.91634562465606" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
+<rect x="583.175" y="150.91909741331867" width="22.674999999999997" height="189.08090258668133" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
 <text x="558.5" y="360" text-anchor="middle" fill="#c9d1d9" font-size="12" font-weight="500">1024B</text>
-<rect x="650.15" y="214.33857539315446" width="22.674999999999997" height="125.66142460684554" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
-<text x="699.5" y="208.33857539315446" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.5ms</text>
-<rect x="674.8249999999999" y="215.81868640148008" width="22.674999999999997" height="124.18131359851992" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
-<rect x="699.5" y="203.9777983348751" width="22.674999999999997" height="136.0222016651249" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
-<rect x="724.175" y="185.47641073080482" width="22.674999999999997" height="154.52358926919518" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
+<rect x="650.15" y="209.9394606494221" width="22.674999999999997" height="130.0605393505779" fill="#3b82f6" opacity="0.85" rx="3" ry="3"/>
+<text x="699.5" y="203.9394606494221" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="500">8.4ms</text>
+<rect x="674.8249999999999" y="210.5558613098514" width="22.674999999999997" height="129.4441386901486" fill="#22c55e" opacity="0.85" rx="3" ry="3"/>
+<rect x="699.5" y="203.31315354980737" width="22.674999999999997" height="136.68684645019263" fill="#f59e0b" opacity="0.85" rx="3" ry="3"/>
+<rect x="724.175" y="181.27682993946064" width="22.674999999999997" height="158.72317006053936" fill="#ef4444" opacity="0.85" rx="3" ry="3"/>
 <text x="699.5" y="360" text-anchor="middle" fill="#c9d1d9" font-size="12" font-weight="500">1380B</text>
 <rect x="240.0" y="387" width="12" height="12" fill="#3b82f6" opacity="0.85" rx="2"/>
 <text x="256.0" y="397" fill="#c9d1d9" font-size="11">Avg</text>
@@ -53,6 +53,6 @@
 <text x="416.0" y="397" fill="#c9d1d9" font-size="11">P95</text>
 <rect x="480.0" y="387" width="12" height="12" fill="#ef4444" opacity="0.85" rx="2"/>
 <text x="496.0" y="397" fill="#c9d1d9" font-size="11">P99</text>
-<line x1="65" y1="224.55134135060126" x2="770" y2="224.55134135060126" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="766" y="218.55134135060126" text-anchor="end" fill="#8b5cf6" font-size="10">ICMP baseline 7.8ms</text>
+<line x1="65" y1="219.80187121629058" x2="770" y2="219.80187121629058" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="766" y="213.80187121629058" text-anchor="end" fill="#8b5cf6" font-size="10">ICMP baseline 7.8ms</text>
 </svg>

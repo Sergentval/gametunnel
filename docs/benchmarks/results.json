@@ -1,9 +1,9 @@
 {
   "meta": {
-    "date": "2026-04-14T11:35:00Z",
+    "date": "2026-04-14T12:50:00Z",
     "server_location": "OVH VPS (Gravelines, FR)",
     "agent_location": "Home server (Paris, FR)",
-    "tunnel": "WireGuard direct (no GRE, no Tailscale)",
+    "tunnel": "WireGuard direct, nftables backend, WebSocket sync",
     "server_ip": "10.99.0.1",
     "agent_ip": "10.99.0.2",
     "packets_per_size": 200,
@@ -11,10 +11,10 @@
     "baseline_icmp_ms": 7.8
   },
   "results": [
-    {"size": 64,   "sent": 200, "lost": 0, "min": 7.77, "avg": 8.55, "p50": 8.39, "p95": 9.34, "p99": 11.36, "max": 12.16, "jitter": 0.54},
-    {"size": 256,  "sent": 200, "lost": 0, "min": 8.09, "avg": 8.58, "p50": 8.41, "p95": 9.16, "p99": 11.20, "max": 22.76, "jitter": 1.07},
-    {"size": 512,  "sent": 200, "lost": 0, "min": 7.49, "avg": 8.95, "p50": 8.50, "p95": 12.08, "p99": 16.45, "max": 16.73, "jitter": 1.36},
-    {"size": 1024, "sent": 200, "lost": 0, "min": 8.05, "avg": 8.51, "p50": 8.42, "p95": 9.20, "p99": 10.84, "max": 11.88, "jitter": 0.43},
-    {"size": 1380, "sent": 200, "lost": 0, "min": 7.48, "avg": 8.49, "p50": 8.39, "p95": 9.19, "p99": 10.44, "max": 10.61, "jitter": 0.36}
+    {"size": 64,   "sent": 200, "lost": 0, "min": 7.45, "avg": 8.48, "p50": 8.44, "p95": 9.08, "p99": 11.82, "max": 13.65, "jitter": 0.59},
+    {"size": 256,  "sent": 200, "lost": 0, "min": 7.45, "avg": 8.40, "p50": 8.38, "p95": 8.82, "p99": 10.28, "max": 10.42, "jitter": 0.33},
+    {"size": 512,  "sent": 200, "lost": 0, "min": 7.48, "avg": 8.63, "p50": 8.44, "p95": 10.17, "p99": 15.80, "max": 16.58, "jitter": 1.07},
+    {"size": 1024, "sent": 200, "lost": 0, "min": 7.13, "avg": 8.45, "p50": 8.41, "p95": 8.82, "p99": 12.27, "max": 14.30, "jitter": 0.56},
+    {"size": 1380, "sent": 200, "lost": 0, "min": 7.41, "avg": 8.44, "p50": 8.40, "p95": 8.87, "p99": 10.30, "max": 11.16, "jitter": 0.35}
   ]
 }
