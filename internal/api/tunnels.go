@@ -91,7 +91,10 @@ func (h *TunnelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.store.SetTunnel(&t)
+	if err := h.store.SetTunnel(&t); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "persist tunnel: " + err.Error()})
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, t)
 }
@@ -145,7 +148,10 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.store.DeleteTunnel(id)
+	if err := h.store.DeleteTunnel(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "persist state: " + err.Error()})
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

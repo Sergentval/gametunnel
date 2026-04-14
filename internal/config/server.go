@@ -24,10 +24,11 @@ type AgentEntry struct {
 
 // WireGuardSettings holds the WireGuard interface configuration.
 type WireGuardSettings struct {
-	Interface  string `yaml:"interface"`
-	ListenPort int    `yaml:"listen_port"`
-	PrivateKey string `yaml:"private_key"`
-	Subnet     string `yaml:"subnet"`
+	Interface        string `yaml:"interface"`
+	ListenPort       int    `yaml:"listen_port"`
+	PrivateKey       string `yaml:"private_key"`
+	Subnet           string `yaml:"subnet"`
+	KeepaliveSeconds int    `yaml:"keepalive_seconds"`
 }
 
 // TProxySettings holds the TPROXY mark and routing table configuration.
@@ -71,6 +72,9 @@ func (c *ServerConfig) applyDefaults() {
 	}
 	if c.WireGuard.ListenPort == 0 {
 		c.WireGuard.ListenPort = 51820
+	}
+	if c.WireGuard.KeepaliveSeconds == 0 {
+		c.WireGuard.KeepaliveSeconds = 15
 	}
 	if c.TProxy.Mark == "" {
 		c.TProxy.Mark = "0x1"

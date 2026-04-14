@@ -28,14 +28,16 @@ type Controller struct {
 	gre     netutil.GREManager
 	routing routing.Manager
 
-	wgIface      string
-	returnTable  int
-	dockerBridge string
+	wgIface          string
+	returnTable      int
+	dockerBridge     string
+	keepaliveSeconds int
 
 	localIP  net.IP
 	serverIP net.IP
 
 	activeTunnels       map[string]models.Tunnel
+	containerIPs        map[string]string // tunnel ID → container IP
 	routeRefCount       int
 	connmarkRefCount    int // ref count for connmark-based reply routing
 	stopCh              chan struct{}
@@ -47,6 +49,7 @@ type Controller struct {
 // returnTable is the policy routing table number for GRE return-path routes.
 // dockerBridge is the Docker bridge interface name (e.g. "pelican0") used for
 // connmark-based reply routing.
+// keepaliveSeconds is the WireGuard persistent keepalive interval.
 func NewController(
 	client *Client,
 	agentID string,
@@ -57,19 +60,22 @@ func NewController(
 	wgIface string,
 	returnTable int,
 	dockerBridge string,
+	keepaliveSeconds int,
 ) *Controller {
 	return &Controller{
-		client:        client,
-		agentID:       agentID,
-		heartbeatSecs: heartbeatSecs,
-		wg:            wg,
-		gre:           gre,
-		routing:       rt,
-		wgIface:       wgIface,
-		returnTable:   returnTable,
-		dockerBridge:  dockerBridge,
-		activeTunnels: make(map[string]models.Tunnel),
-		stopCh:        make(chan struct{}),
+		client:           client,
+		agentID:          agentID,
+		heartbeatSecs:    heartbeatSecs,
+		wg:               wg,
+		gre:              gre,
+		routing:          rt,
+		wgIface:          wgIface,
+		returnTable:      returnTable,
+		dockerBridge:     dockerBridge,
+		keepaliveSeconds: keepaliveSeconds,
+		activeTunnels:    make(map[string]models.Tunnel),
+		containerIPs:     make(map[string]string),
+		stopCh:           make(chan struct{}),
 	}
 }
 
@@ -100,7 +106,7 @@ func (c *Controller) Register(privateKey, serverEndpoint string) error {
 		Endpoint:   resp.WireGuard.ServerEndpoint,
 		AllowedIPs: []string{"10.99.0.0/24", "10.100.0.0/16"},
 	}
-	if err := c.wg.AddPeer(c.wgIface, peer); err != nil {
+	if err := c.wg.AddPeer(c.wgIface, peer, c.keepaliveSeconds); err != nil {
 		return fmt.Errorf("add server as wireguard peer: %w", err)
 	}
 
@@ -226,6 +232,7 @@ func (c *Controller) createTunnel(t models.Tunnel) error {
 	// Auto-detect Docker container IP for DNAT.
 	containerIP := c.detectContainerIP(t.PublicPort)
 	if containerIP != "" {
+		c.containerIPs[t.ID] = containerIP
 		c.setupDNAT(t, containerIP)
 	} else {
 		slog.Warn("no Docker container found for port, skipping DNAT", "port", t.PublicPort)
@@ -459,16 +466,28 @@ func (c *Controller) cleanupDNAT(t models.Tunnel) {
 	proto := string(t.Protocol)
 	portStr := fmt.Sprintf("%d", t.PublicPort)
 
-	// We need to find and delete the DNAT rule. Since we don't store the
-	// container IP, list rules and match by interface + port.
-	rules, err := ipt.List("nat", "PREROUTING")
-	if err == nil {
-		for _, rule := range rules {
-			if strings.Contains(rule, t.GREInterface) && strings.Contains(rule, portStr) && strings.Contains(rule, "DNAT") {
-				// Parse the rule into a rulespec by removing the leading "-A PREROUTING ".
-				spec := strings.TrimPrefix(rule, "-A PREROUTING ")
-				parts := strings.Fields(spec)
-				_ = ipt.Delete("nat", "PREROUTING", parts...)
+	// Try the stored container IP for a precise delete first.
+	if storedIP, ok := c.containerIPs[t.ID]; ok {
+		dest := fmt.Sprintf("%s:%d", storedIP, t.PublicPort)
+		dnatRule := []string{
+			"-i", t.GREInterface,
+			"-p", proto,
+			"--dport", portStr,
+			"-j", "DNAT",
+			"--to-destination", dest,
+		}
+		_ = ipt.Delete("nat", "PREROUTING", dnatRule...)
+		delete(c.containerIPs, t.ID)
+	} else {
+		// Fallback: list rules and match by interface + port.
+		rules, err := ipt.List("nat", "PREROUTING")
+		if err == nil {
+			for _, rule := range rules {
+				if strings.Contains(rule, t.GREInterface) && strings.Contains(rule, portStr) && strings.Contains(rule, "DNAT") {
+					spec := strings.TrimPrefix(rule, "-A PREROUTING ")
+					parts := strings.Fields(spec)
+					_ = ipt.Delete("nat", "PREROUTING", parts...)
+				}
 			}
 		}
 	}
@@ -478,8 +497,6 @@ func (c *Controller) cleanupDNAT(t models.Tunnel) {
 	if exists, _ := ipt.Exists("nat", "POSTROUTING", returnRule...); exists {
 		_ = ipt.Delete("nat", "POSTROUTING", returnRule...)
 	}
-
-	_ = proto // suppress unused warning
 }
 
 // cleanupForwardRules removes FORWARD accept rules for a GRE interface.

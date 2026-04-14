@@ -26,7 +26,7 @@ type mockWG struct {
 
 func (m *mockWG) Setup(_ string, _ string, _ int, _ string) error     { return nil }
 func (m *mockWG) SetAddress(_ string, _ string) error                  { return nil }
-func (m *mockWG) AddPeer(_ string, _ models.WireGuardPeerConfig) error { return nil }
+func (m *mockWG) AddPeer(_ string, _ models.WireGuardPeerConfig, _ int) error { return nil }
 func (m *mockWG) RemovePeer(_ string, _ string) error                  { return nil }
 func (m *mockWG) Close() error                                         { return nil }
 func (m *mockWG) PublicKey() string                                    { return m.pubKey }
@@ -74,7 +74,7 @@ func setupTestAPI(t *testing.T) *testEnv {
 	}
 
 	wgMgr := &mockWG{pubKey: "server-public-key"}
-	registry, err := agent.NewRegistry(wgMgr, "wg0", "10.99.0.0/24", "1.2.3.4:51820")
+	registry, err := agent.NewRegistry(wgMgr, "wg0", "10.99.0.0/24", "1.2.3.4:51820", 15)
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}

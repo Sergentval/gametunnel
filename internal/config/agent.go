@@ -19,9 +19,10 @@ type AgentSettings struct {
 
 // AgentWireGuardSettings holds WireGuard configuration for the agent side.
 type AgentWireGuardSettings struct {
-	Interface      string `yaml:"interface"`
-	PrivateKey     string `yaml:"private_key"`
-	ServerEndpoint string `yaml:"server_endpoint"`
+	Interface        string `yaml:"interface"`
+	PrivateKey       string `yaml:"private_key"`
+	ServerEndpoint   string `yaml:"server_endpoint"`
+	KeepaliveSeconds int    `yaml:"keepalive_seconds"`
 }
 
 // AgentRoutingSettings holds policy routing configuration for the agent.
@@ -41,6 +42,9 @@ type AgentConfig struct {
 func (c *AgentConfig) applyDefaults() {
 	if c.WireGuard.Interface == "" {
 		c.WireGuard.Interface = "wg0"
+	}
+	if c.WireGuard.KeepaliveSeconds == 0 {
+		c.WireGuard.KeepaliveSeconds = 15
 	}
 	if c.Agent.HeartbeatIntervalSeconds == 0 {
 		c.Agent.HeartbeatIntervalSeconds = 10

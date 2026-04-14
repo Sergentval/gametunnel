@@ -147,9 +147,8 @@ func (w *Watcher) Sync() error {
 			slog.Error("pelican watcher: create tunnel", "port", port, "error", err)
 		} else {
 			slog.Info("pelican watcher: created tunnel", "port", port, "alloc_id", allocID, "server_id", serverID)
-			w.store.SetTunnel(&tun)
-			if flushErr := w.store.Flush(); flushErr != nil {
-				slog.Error("pelican watcher: flush state after create", "port", port, "error", flushErr)
+			if storeErr := w.store.SetTunnel(&tun); storeErr != nil {
+				slog.Error("pelican watcher: persist state after create", "port", port, "error", storeErr)
 			}
 		}
 	}
@@ -161,9 +160,8 @@ func (w *Watcher) Sync() error {
 				slog.Error("pelican watcher: delete orphaned tunnel", "tunnel_id", t.ID, "port", port, "error", err)
 			} else {
 				slog.Info("pelican watcher: removed orphaned tunnel", "port", port)
-				w.store.DeleteTunnel(t.ID)
-				if flushErr := w.store.Flush(); flushErr != nil {
-					slog.Error("pelican watcher: flush state after delete", "port", port, "error", flushErr)
+				if storeErr := w.store.DeleteTunnel(t.ID); storeErr != nil {
+					slog.Error("pelican watcher: persist state after delete", "port", port, "error", storeErr)
 				}
 			}
 		}

@@ -68,7 +68,7 @@ func (s *Store) Flush() error {
 	}
 	s.mu.RUnlock()
 
-	data, err := json.MarshalIndent(sd, "", "  ")
+	data, err := json.Marshal(sd)
 	if err != nil {
 		return fmt.Errorf("serializing state: %w", err)
 	}
@@ -105,19 +105,22 @@ func (s *Store) GetAgent(id string) *models.Agent {
 	return &copy
 }
 
-// SetAgent inserts or replaces the agent.
-func (s *Store) SetAgent(a *models.Agent) {
+// SetAgent inserts or replaces the agent and flushes state to disk.
+func (s *Store) SetAgent(a *models.Agent) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	copy := *a
 	s.agents[a.ID] = &copy
+	s.mu.Unlock()
+	return s.Flush()
 }
 
-// DeleteAgent removes the agent with the given ID. No-op if not found.
-func (s *Store) DeleteAgent(id string) {
+// DeleteAgent removes the agent with the given ID and flushes state to disk.
+// No-op for removal if not found, but still flushes.
+func (s *Store) DeleteAgent(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.agents, id)
+	s.mu.Unlock()
+	return s.Flush()
 }
 
 // ListAgents returns a snapshot of all agents.
@@ -146,19 +149,22 @@ func (s *Store) GetTunnel(id string) *models.Tunnel {
 	return &copy
 }
 
-// SetTunnel inserts or replaces the tunnel.
-func (s *Store) SetTunnel(t *models.Tunnel) {
+// SetTunnel inserts or replaces the tunnel and flushes state to disk.
+func (s *Store) SetTunnel(t *models.Tunnel) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	copy := *t
 	s.tunnels[t.ID] = &copy
+	s.mu.Unlock()
+	return s.Flush()
 }
 
-// DeleteTunnel removes the tunnel with the given ID. No-op if not found.
-func (s *Store) DeleteTunnel(id string) {
+// DeleteTunnel removes the tunnel with the given ID and flushes state to disk.
+// No-op for removal if not found, but still flushes.
+func (s *Store) DeleteTunnel(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.tunnels, id)
+	s.mu.Unlock()
+	return s.Flush()
 }
 
 // ListTunnels returns a snapshot of all tunnels.

@@ -93,7 +93,8 @@ func (m *wireguardManager) SetAddress(iface string, address string) error {
 }
 
 // AddPeer configures a WireGuard peer on the given interface.
-func (m *wireguardManager) AddPeer(iface string, peer models.WireGuardPeerConfig) error {
+// keepaliveSeconds specifies the persistent keepalive interval; if 0, defaults to 25.
+func (m *wireguardManager) AddPeer(iface string, peer models.WireGuardPeerConfig, keepaliveSeconds int) error {
 	// Parse public key.
 	keyBytes, err := base64.StdEncoding.DecodeString(peer.PublicKey)
 	if err != nil {
@@ -124,7 +125,10 @@ func (m *wireguardManager) AddPeer(iface string, peer models.WireGuardPeerConfig
 		}
 	}
 
-	keepalive := 25 * time.Second
+	if keepaliveSeconds <= 0 {
+		keepaliveSeconds = 25
+	}
+	keepalive := time.Duration(keepaliveSeconds) * time.Second
 
 	peerCfg := wgtypes.PeerConfig{
 		PublicKey:                   pubKey,

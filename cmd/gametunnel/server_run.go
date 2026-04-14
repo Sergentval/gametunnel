@@ -129,7 +129,7 @@ func serverRun(args []string) {
 	}
 	serverEndpoint := fmt.Sprintf("%s:%d", publicIP, cfg.WireGuard.ListenPort)
 
-	registry, err := agent.NewRegistry(wgMgr, cfg.WireGuard.Interface, cfg.WireGuard.Subnet, serverEndpoint)
+	registry, err := agent.NewRegistry(wgMgr, cfg.WireGuard.Interface, cfg.WireGuard.Subnet, serverEndpoint, cfg.WireGuard.KeepaliveSeconds)
 	if err != nil {
 		slog.Error("init agent registry", "error", err)
 		os.Exit(1)
@@ -306,14 +306,15 @@ func serverRun(args []string) {
 	// Persist current state.
 	for _, a := range registry.ListAgents() {
 		a := a
-		store.SetAgent(&a)
+		if err := store.SetAgent(&a); err != nil {
+			slog.Warn("persist agent state", "agent_id", a.ID, "error", err)
+		}
 	}
 	for _, t := range tunnelMgr.List() {
 		t := t
-		store.SetTunnel(&t)
-	}
-	if err := store.Flush(); err != nil {
-		slog.Warn("flush state", "error", err)
+		if err := store.SetTunnel(&t); err != nil {
+			slog.Warn("persist tunnel state", "tunnel_id", t.ID, "error", err)
+		}
 	}
 
 	slog.Info("shutdown complete")

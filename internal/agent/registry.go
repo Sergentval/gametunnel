@@ -20,19 +20,21 @@ type RegisterResponse struct {
 
 // Registry tracks agents and manages their WireGuard peers.
 type Registry struct {
-	mu             sync.Mutex
-	wg             netutil.WireGuardManager
-	wgIface        string
-	subnet         *net.IPNet
-	serverEndpoint string
-	agents         map[string]models.Agent
-	ipPool         map[string]bool // assigned IP → in-use
-	nextIP         net.IP
+	mu               sync.Mutex
+	wg               netutil.WireGuardManager
+	wgIface          string
+	subnet           *net.IPNet
+	serverEndpoint   string
+	keepaliveSeconds int
+	agents           map[string]models.Agent
+	ipPool           map[string]bool // assigned IP → in-use
+	nextIP           net.IP
 }
 
 // NewRegistry creates a Registry for the given WireGuard interface and subnet.
 // IP allocation starts at network+2 (skipping the gateway at .1).
-func NewRegistry(wg netutil.WireGuardManager, wgIface, subnetStr, serverEndpoint string) (*Registry, error) {
+// keepaliveSeconds is the WireGuard persistent keepalive interval for peers.
+func NewRegistry(wg netutil.WireGuardManager, wgIface, subnetStr, serverEndpoint string, keepaliveSeconds int) (*Registry, error) {
 	_, subnet, err := net.ParseCIDR(subnetStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse subnet %q: %w", subnetStr, err)
@@ -44,13 +46,14 @@ func NewRegistry(wg netutil.WireGuardManager, wgIface, subnetStr, serverEndpoint
 	incrementIPInPlace(startIP) // now at .2
 
 	return &Registry{
-		wg:             wg,
-		wgIface:        wgIface,
-		subnet:         subnet,
-		serverEndpoint: serverEndpoint,
-		agents:         make(map[string]models.Agent),
-		ipPool:         make(map[string]bool),
-		nextIP:         startIP,
+		wg:               wg,
+		wgIface:          wgIface,
+		subnet:           subnet,
+		serverEndpoint:   serverEndpoint,
+		keepaliveSeconds: keepaliveSeconds,
+		agents:           make(map[string]models.Agent),
+		ipPool:           make(map[string]bool),
+		nextIP:           startIP,
 	}, nil
 }
 
@@ -81,7 +84,7 @@ func (r *Registry) Register(id, publicKey string) (RegisterResponse, error) {
 		AllowedIPs: []string{assignedIP + "/32"},
 		AssignedIP: assignedIP,
 	}
-	if err := r.wg.AddPeer(r.wgIface, peerCfg); err != nil {
+	if err := r.wg.AddPeer(r.wgIface, peerCfg, r.keepaliveSeconds); err != nil {
 		if _, exists := r.agents[id]; !exists {
 			// Roll back IP allocation for new registrations only.
 			delete(r.ipPool, assignedIP)

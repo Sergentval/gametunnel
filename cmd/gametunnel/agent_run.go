@@ -80,6 +80,7 @@ func agentRun(args []string) {
 		cfg.WireGuard.Interface,
 		cfg.Routing.ReturnTable,
 		cfg.Routing.DockerBridge,
+		cfg.WireGuard.KeepaliveSeconds,
 	)
 
 	// ── Registration with retry ─────────────────────────────────────────────

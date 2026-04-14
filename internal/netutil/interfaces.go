@@ -13,7 +13,7 @@ type GREManager interface {
 type WireGuardManager interface {
 	Setup(iface string, privateKey string, listenPort int, address string) error
 	SetAddress(iface string, address string) error
-	AddPeer(iface string, peer models.WireGuardPeerConfig) error
+	AddPeer(iface string, peer models.WireGuardPeerConfig, keepaliveSeconds int) error
 	RemovePeer(iface string, publicKey string) error
 	Close() error
 	PublicKey() string

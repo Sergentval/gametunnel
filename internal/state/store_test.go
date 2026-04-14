@@ -28,7 +28,9 @@ func TestSaveAndLoad(t *testing.T) {
 		Status:       models.AgentStatusOnline,
 		RegisteredAt: time.Now().Truncate(time.Second),
 	}
-	s.SetAgent(agent)
+	if err := s.SetAgent(agent); err != nil {
+		t.Fatalf("SetAgent: %v", err)
+	}
 
 	alloc := 42
 	tunnel := &models.Tunnel{
@@ -44,10 +46,8 @@ func TestSaveAndLoad(t *testing.T) {
 		Status:              models.TunnelStatusActive,
 		CreatedAt:           time.Now().Truncate(time.Second),
 	}
-	s.SetTunnel(tunnel)
-
-	if err := s.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
+	if err := s.SetTunnel(tunnel); err != nil {
+		t.Fatalf("SetTunnel: %v", err)
 	}
 
 	s2, err := NewStore(path)
@@ -78,10 +78,16 @@ func TestSaveAndLoad(t *testing.T) {
 func TestDeleteAgent(t *testing.T) {
 	s, _ := newTestStore(t)
 
-	s.SetAgent(&models.Agent{ID: "a1"})
-	s.SetAgent(&models.Agent{ID: "a2"})
+	if err := s.SetAgent(&models.Agent{ID: "a1"}); err != nil {
+		t.Fatalf("SetAgent a1: %v", err)
+	}
+	if err := s.SetAgent(&models.Agent{ID: "a2"}); err != nil {
+		t.Fatalf("SetAgent a2: %v", err)
+	}
 
-	s.DeleteAgent("a1")
+	if err := s.DeleteAgent("a1"); err != nil {
+		t.Fatalf("DeleteAgent: %v", err)
+	}
 
 	if s.GetAgent("a1") != nil {
 		t.Error("agent a1 should have been deleted")
@@ -94,10 +100,16 @@ func TestDeleteAgent(t *testing.T) {
 func TestDeleteTunnel(t *testing.T) {
 	s, _ := newTestStore(t)
 
-	s.SetTunnel(&models.Tunnel{ID: "t1", PublicPort: 1000})
-	s.SetTunnel(&models.Tunnel{ID: "t2", PublicPort: 2000})
+	if err := s.SetTunnel(&models.Tunnel{ID: "t1", PublicPort: 1000}); err != nil {
+		t.Fatalf("SetTunnel t1: %v", err)
+	}
+	if err := s.SetTunnel(&models.Tunnel{ID: "t2", PublicPort: 2000}); err != nil {
+		t.Fatalf("SetTunnel t2: %v", err)
+	}
 
-	s.DeleteTunnel("t1")
+	if err := s.DeleteTunnel("t1"); err != nil {
+		t.Fatalf("DeleteTunnel: %v", err)
+	}
 
 	if s.GetTunnel("t1") != nil {
 		t.Error("tunnel t1 should have been deleted")
@@ -110,9 +122,15 @@ func TestDeleteTunnel(t *testing.T) {
 func TestListTunnelsByAgent(t *testing.T) {
 	s, _ := newTestStore(t)
 
-	s.SetTunnel(&models.Tunnel{ID: "t1", AgentID: "a1", PublicPort: 1001})
-	s.SetTunnel(&models.Tunnel{ID: "t2", AgentID: "a1", PublicPort: 1002})
-	s.SetTunnel(&models.Tunnel{ID: "t3", AgentID: "a2", PublicPort: 1003})
+	if err := s.SetTunnel(&models.Tunnel{ID: "t1", AgentID: "a1", PublicPort: 1001}); err != nil {
+		t.Fatalf("SetTunnel t1: %v", err)
+	}
+	if err := s.SetTunnel(&models.Tunnel{ID: "t2", AgentID: "a1", PublicPort: 1002}); err != nil {
+		t.Fatalf("SetTunnel t2: %v", err)
+	}
+	if err := s.SetTunnel(&models.Tunnel{ID: "t3", AgentID: "a2", PublicPort: 1003}); err != nil {
+		t.Fatalf("SetTunnel t3: %v", err)
+	}
 
 	results := s.ListTunnelsByAgent("a1")
 	if len(results) != 2 {
@@ -138,9 +156,15 @@ func TestListTunnelsByAgent(t *testing.T) {
 func TestListTunnelsBySource(t *testing.T) {
 	s, _ := newTestStore(t)
 
-	s.SetTunnel(&models.Tunnel{ID: "t1", Source: models.TunnelSourceManual, PublicPort: 1001})
-	s.SetTunnel(&models.Tunnel{ID: "t2", Source: models.TunnelSourcePelican, PublicPort: 1002})
-	s.SetTunnel(&models.Tunnel{ID: "t3", Source: models.TunnelSourcePelican, PublicPort: 1003})
+	if err := s.SetTunnel(&models.Tunnel{ID: "t1", Source: models.TunnelSourceManual, PublicPort: 1001}); err != nil {
+		t.Fatalf("SetTunnel t1: %v", err)
+	}
+	if err := s.SetTunnel(&models.Tunnel{ID: "t2", Source: models.TunnelSourcePelican, PublicPort: 1002}); err != nil {
+		t.Fatalf("SetTunnel t2: %v", err)
+	}
+	if err := s.SetTunnel(&models.Tunnel{ID: "t3", Source: models.TunnelSourcePelican, PublicPort: 1003}); err != nil {
+		t.Fatalf("SetTunnel t3: %v", err)
+	}
 
 	manual := s.ListTunnelsBySource(models.TunnelSourceManual)
 	if len(manual) != 1 {
@@ -156,8 +180,12 @@ func TestListTunnelsBySource(t *testing.T) {
 func TestTunnelByPort(t *testing.T) {
 	s, _ := newTestStore(t)
 
-	s.SetTunnel(&models.Tunnel{ID: "t1", PublicPort: 25565})
-	s.SetTunnel(&models.Tunnel{ID: "t2", PublicPort: 19132})
+	if err := s.SetTunnel(&models.Tunnel{ID: "t1", PublicPort: 25565}); err != nil {
+		t.Fatalf("SetTunnel t1: %v", err)
+	}
+	if err := s.SetTunnel(&models.Tunnel{ID: "t2", PublicPort: 19132}); err != nil {
+		t.Fatalf("SetTunnel t2: %v", err)
+	}
 
 	t.Run("found", func(t *testing.T) {
 		got := s.TunnelByPort(25565)
@@ -187,11 +215,8 @@ func TestNewFileNonexistentParentDir(t *testing.T) {
 		t.Fatalf("NewStore with nonexistent parent: %v", err)
 	}
 
-	s.SetAgent(&models.Agent{ID: "x"})
-
-	// Flush should create parent dirs automatically.
-	if err := s.Flush(); err != nil {
-		t.Fatalf("Flush with nonexistent parent dir: %v", err)
+	if err := s.SetAgent(&models.Agent{ID: "x"}); err != nil {
+		t.Fatalf("SetAgent: %v", err)
 	}
 
 	s2, err := NewStore(path)

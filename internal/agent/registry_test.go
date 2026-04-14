@@ -19,7 +19,7 @@ func newMockWG() *mockWG {
 
 func (m *mockWG) Setup(string, string, int, string) error { return nil }
 
-func (m *mockWG) AddPeer(iface string, peer models.WireGuardPeerConfig) error {
+func (m *mockWG) AddPeer(iface string, peer models.WireGuardPeerConfig, keepaliveSeconds int) error {
 	m.peers[peer.PublicKey] = true
 	return nil
 }
@@ -40,7 +40,7 @@ func (m *mockWG) PublicKey() string { return "server-pub-key" }
 func newTestRegistry(t *testing.T) (*Registry, *mockWG) {
 	t.Helper()
 	wg := newMockWG()
-	r, err := NewRegistry(wg, "wg0", "10.200.0.0/24", "vpn.example.com:51820")
+	r, err := NewRegistry(wg, "wg0", "10.200.0.0/24", "vpn.example.com:51820", 15)
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
