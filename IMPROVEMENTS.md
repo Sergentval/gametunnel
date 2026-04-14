@@ -49,18 +49,18 @@ cfg := wgtypes.Config{
 }
 ```
 
-### 1.4 TCP BBR congestion control on the WireGuard tunnel
+### 1.4 TCP BBR congestion control + larger buffers ✅ DONE
 
-**Impact: better throughput on lossy links, faster recovery from packet loss**
+**Impact (measured): Steam CDN download 1.86 MB/s → 47+ MB/s (~25× faster)**
 
-WireGuard carries TCP game connections. If the outer UDP link has occasional loss, TCP inside the tunnel uses CUBIC by default (slow recovery). BBR handles loss better.
+CUBIC (Linux default) is conservative and ramps slowly on long paths. Steam
+CDN downloads through the tunnel were capped at ~15 Mbps on a 10 Gbps link.
+BBR handles bandwidth-delay product properly and saturates the link.
 
-**Fix:** On both hosts:
-```bash
-sysctl -w net.ipv4.tcp_congestion_control=bbr
-```
+Combined with 64 MB TCP buffers (vs default 4-6 MB) and `fq` qdisc
+(required by BBR) and TCP Fast Open.
 
-Or per-interface via `ip route ... congctl bbr`.
+Config: `deploy/sysctl/99-gametunnel.conf` — apply on both hosts.
 
 ---
 
@@ -226,13 +226,14 @@ Add: latency metrics per heartbeat, WireGuard handshake age, GRE interface stats
 
 | Priority | Item | Effort | Impact |
 |----------|------|--------|--------|
-| 1 | 2.1 Restore kernel state on restart | Medium | Eliminates downtime on server restart |
-| 2 | 1.1 Remove GRE (direct WireGuard) | Medium | -1-2ms latency |
-| 3 | 2.4 Store container IP | Small | Fix brittle cleanup |
-| 4 | 2.3 Auto-flush state | Small | Prevent state loss on crash |
-| 5 | 1.2 Configurable keepalive | Small | Fewer lag spikes behind NAT |
-| 6 | 3.2 Docker SDK | Medium | Faster, more robust |
-| 7 | 4.1 Health + metrics | Medium | Observability |
-| 8 | 2.2 WebSocket sync | Large | Near-instant tunnel activation |
-| 9 | 3.3 nftables migration | Large | Performance at scale |
-| 10 | 3.1 GRE keys | Medium | Multi-tunnel per agent |
+| ✅ | 2.1 Restore kernel state on restart | Medium | Eliminates downtime on server restart |
+| ✅ | 1.1 Remove GRE (direct WireGuard) | Medium | -160 LOC, simpler stack |
+| ✅ | 2.4 Store container IP | Small | Deterministic cleanup |
+| ✅ | 2.3 Auto-flush state | Small | Prevents state loss on crash |
+| ✅ | 1.2 Configurable keepalive | Small | Fewer lag spikes behind NAT |
+| ✅ | 3.2 Docker SDK | Medium | 5ms vs 50ms container lookup |
+| ✅ | 4.1 Health + metrics | Medium | /healthz + /metrics endpoints |
+| ✅ | 2.2 WebSocket sync | Large | <100ms tunnel activation (was 30s) |
+| ✅ | 3.3 nftables migration | Large | One rule for all ports, native netlink |
+| ✅ | 1.4 BBR + TCP buffers | Small | 25× faster Steam CDN downloads |
+| 10 | 3.1 GRE keys | Medium | Multi-tunnel per agent (future) |

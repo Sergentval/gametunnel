@@ -201,14 +201,32 @@ Run your own: `gametunnel bench server` on one end, `gametunnel bench client --t
 
 ```bash
 # Required modules (usually auto-loaded)
-modprobe ip_gre
-modprobe xt_TPROXY
+modprobe ip_gre        # GRE (only needed if using legacy GRE backend)
+modprobe xt_TPROXY     # TPROXY (only for iptables fallback)
+modprobe tcp_bbr       # BBR congestion control (recommended)
 
-# Required sysctls
+# Required sysctls (forwarding + accept_local for tunnel routing)
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv4.conf.all.rp_filter=0
 sysctl -w net.ipv4.conf.all.accept_local=1
 ```
+
+### Recommended Network Tuning
+
+Apply on **both** VPS and home agent for full-throughput downloads through
+the tunnel (Steam updates, game asset downloads). Without this, single TCP
+connections through the tunnel can be capped at <2 MB/s by CUBIC's slow-start.
+
+```bash
+sudo cp deploy/sysctl/99-gametunnel.conf /etc/sysctl.d/
+echo "tcp_bbr" | sudo tee /etc/modules-load.d/bbr.conf
+sudo modprobe tcp_bbr
+sudo sysctl -p /etc/sysctl.d/99-gametunnel.conf
+```
+
+This enables BBR + fq qdisc + 64 MB TCP buffers + TCP Fast Open. Observed
+improvement on a 1 Gbps fibre link: Steam CDN download speed jumped from
+1.86 MB/s to 47+ MB/s (~25× faster).
 
 ## Configuration Reference
 
