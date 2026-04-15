@@ -14,6 +14,8 @@ Player (real IP: 1.2.3.4)
 ## Documentation
 
 - **[Adding Game Servers](docs/ADDING_GAME_SERVERS.md)** — Operational runbook for adding Steam-based game servers (Rust, Valheim, ARK, etc.). Covers outbound NAT for Steam visibility, common pitfalls, MTU/MSS clamping, BBR tuning.
+- **[Recovery & Boot Resilience](docs/RECOVERY.md)** — What persists, what auto-rebuilds, failure scenarios, cold-start verification.
+- **[Security](docs/SECURITY.md)** — nftables security layer, rate limiting, ban set, fail2ban integration.
 - **[Improvement Roadmap](IMPROVEMENTS.md)** — Implemented optimisations and remaining ideas.
 - **[Benchmarks](docs/benchmarks/)** — Latency and throughput measurements.
 
