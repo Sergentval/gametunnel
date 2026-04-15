@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -188,13 +189,31 @@ func (r *Registry) CheckTimeouts(timeout time.Duration) []string {
 	return timedOut
 }
 
-// LoadFromState restores in-memory state from persisted agents.
+// LoadFromState restores in-memory state from persisted agents AND re-adds
+// their WireGuard peers to the interface. Without the peer re-add, a server
+// restart would leave the WG interface with no peers until the agent
+// re-registers — breaking tunnel connectivity in the meantime.
 func (r *Registry) LoadFromState(agents []models.Agent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, a := range agents {
 		r.agents[a.ID] = a
 		r.ipPool[a.AssignedIP] = true
+
+		// Re-add WireGuard peer for restored agent. Best-effort: we don't
+		// have the agent's endpoint (it's dynamic, learned on re-registration),
+		// so we add the peer with just the key + allowed IPs. The kernel will
+		// accept inbound packets once the agent connects and establishes the
+		// endpoint via handshake.
+		if a.PublicKey != "" {
+			peerCfg := models.WireGuardPeerConfig{
+				PublicKey:  a.PublicKey,
+				AllowedIPs: []string{"0.0.0.0/0", "::/0"},
+			}
+			if err := r.wg.AddPeer(r.wgIface, peerCfg, r.keepaliveSeconds); err != nil {
+				slog.Warn("restore wireguard peer", "agent_id", a.ID, "error", err)
+			}
+		}
 	}
 }
 
