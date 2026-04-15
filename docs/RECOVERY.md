@@ -162,6 +162,14 @@ ip rule | head -5
 **User-visible impact:** ~30s of total downtime (game containers take ~20s
 to restart after Wings comes up).
 
+**Note on container-before-tunnel ordering:** If `gametunnel-agent` starts
+(or a tunnel is created) *before* the game container is up, `setupDNAT`
+logs `"no Docker container found for port, skipping DNAT"`. The agent's
+sync loop retries on every heartbeat (default 10s): as soon as the
+container appears, DNAT installs automatically with
+`"DNAT installed after container became available"`. No manual
+intervention needed.
+
 ### Scenario 3: WG tunnel drops (network blip, ISP hiccup)
 
 **What happens:**

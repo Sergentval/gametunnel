@@ -356,6 +356,31 @@ func (c *Controller) syncTunnels(serverTunnels []models.Tunnel) {
 		}
 	}
 
+	// Retry DNAT for tunnels where the container wasn't running at create
+	// time — e.g. a Pelican tunnel is allocated before the game container
+	// starts, or the game server was stopped and restarted. Without this,
+	// inbound traffic is black-holed until the agent restarts.
+	//
+	// We rescan on every sync cycle (polling interval is O(10s)), which is
+	// cheap — detectContainerIP only queries the Docker socket when a tunnel
+	// still has no container IP recorded.
+	for id, t := range c.activeTunnels {
+		if _, ok := c.containerIPs[id]; ok {
+			continue // DNAT already installed
+		}
+		containerIP := c.detectContainerIP(t.PublicPort)
+		if containerIP == "" {
+			continue // container still not up — try again next cycle
+		}
+		if err := c.setupDNAT(t, containerIP); err != nil {
+			slog.Warn("retry setup DNAT", "name", t.Name, "port", t.PublicPort, "error", err)
+			continue
+		}
+		c.containerIPs[id] = containerIP
+		slog.Info("DNAT installed after container became available",
+			"name", t.Name, "port", t.PublicPort, "container_ip", containerIP)
+	}
+
 	// Remove tunnels that are no longer desired.
 	for id, t := range c.activeTunnels {
 		if _, exists := desired[id]; !exists {
