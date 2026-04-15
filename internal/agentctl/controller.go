@@ -111,10 +111,14 @@ func (c *Controller) Register(privateKey, serverEndpoint string) error {
 	serverIP[3] = 1
 	c.serverIP = serverIP
 
+	// AllowedIPs=0.0.0.0/0 allows the agent to route arbitrary destinations
+	// through the WireGuard tunnel — needed for outbound traffic from
+	// game-server containers to appear as coming from the VPS public IP
+	// (so Steam master server registration uses the correct IP).
 	peer := models.WireGuardPeerConfig{
 		PublicKey:  resp.WireGuard.ServerPublicKey,
 		Endpoint:   resp.WireGuard.ServerEndpoint,
-		AllowedIPs: []string{"10.99.0.0/24", "10.100.0.0/16"},
+		AllowedIPs: []string{"0.0.0.0/0", "::/0"},
 	}
 	if err := c.wg.AddPeer(c.wgIface, peer, c.keepaliveSeconds); err != nil {
 		return fmt.Errorf("add server as wireguard peer: %w", err)

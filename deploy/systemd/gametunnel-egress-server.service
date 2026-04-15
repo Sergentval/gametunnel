@@ -1,0 +1,40 @@
+[Unit]
+Description=GameTunnel egress NAT (VPS side — game traffic forwarding + outbound MASQUERADE)
+After=gametunnel-server.service
+Requires=gametunnel-server.service
+
+# Adjust these to match your environment:
+#   PUBLIC_IFACE — VPS public interface (typically ens3, eth0, etc.)
+#   WG_IFACE — WireGuard server interface (default: wg-gt)
+#   WG_SUBNET — WireGuard tunnel subnet (default: 10.99.0.0/24)
+#   HOME_DOCKER_SUBNET — home Pelican Docker subnet (default: 172.28.0.0/16)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PUBLIC_IFACE=ens3
+Environment=WG_IFACE=wg-gt
+Environment=WG_SUBNET=10.99.0.0/24
+Environment=HOME_DOCKER_SUBNET=172.28.0.0/16
+
+# Forward game traffic between public interface and WireGuard
+ExecStart=/bin/sh -c '/usr/sbin/iptables -C FORWARD -i ${PUBLIC_IFACE} -o ${WG_IFACE} -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -i ${PUBLIC_IFACE} -o ${WG_IFACE} -j ACCEPT'
+ExecStart=/bin/sh -c '/usr/sbin/iptables -C FORWARD -i ${WG_IFACE} -o ${PUBLIC_IFACE} -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -i ${WG_IFACE} -o ${PUBLIC_IFACE} -j ACCEPT'
+
+# MASQUERADE container outbound (so Steam sees the VPS public IP as the source)
+ExecStart=/bin/sh -c '/usr/sbin/iptables -t nat -C POSTROUTING -s ${WG_SUBNET} -o ${PUBLIC_IFACE} -j MASQUERADE 2>/dev/null || /usr/sbin/iptables -t nat -I POSTROUTING -s ${WG_SUBNET} -o ${PUBLIC_IFACE} -j MASQUERADE'
+
+# Route home Docker subnet through the tunnel (return path for outbound)
+ExecStart=-/bin/sh -c '/usr/sbin/ip route add ${HOME_DOCKER_SUBNET} dev ${WG_IFACE}'
+
+# TCP MSS clamp on WireGuard (prevents fragmentation of large TCP packets)
+ExecStart=/bin/sh -c '/usr/sbin/iptables -t mangle -C FORWARD -o ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || /usr/sbin/iptables -t mangle -A FORWARD -o ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu'
+ExecStart=/bin/sh -c '/usr/sbin/iptables -t mangle -C FORWARD -i ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || /usr/sbin/iptables -t mangle -A FORWARD -i ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu'
+
+ExecStop=-/bin/sh -c '/usr/sbin/iptables -D FORWARD -i ${PUBLIC_IFACE} -o ${WG_IFACE} -j ACCEPT'
+ExecStop=-/bin/sh -c '/usr/sbin/iptables -D FORWARD -i ${WG_IFACE} -o ${PUBLIC_IFACE} -j ACCEPT'
+ExecStop=-/bin/sh -c '/usr/sbin/iptables -t nat -D POSTROUTING -s ${WG_SUBNET} -o ${PUBLIC_IFACE} -j MASQUERADE'
+ExecStop=-/bin/sh -c '/usr/sbin/ip route del ${HOME_DOCKER_SUBNET} dev ${WG_IFACE}'
+
+[Install]
+WantedBy=multi-user.target

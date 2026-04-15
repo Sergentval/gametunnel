@@ -11,6 +11,12 @@ Player (real IP: 1.2.3.4)
     → Home game server sees: 1.2.3.4
 ```
 
+## Documentation
+
+- **[Adding Game Servers](docs/ADDING_GAME_SERVERS.md)** — Operational runbook for adding Steam-based game servers (Rust, Valheim, ARK, etc.). Covers outbound NAT for Steam visibility, common pitfalls, MTU/MSS clamping, BBR tuning.
+- **[Improvement Roadmap](IMPROVEMENTS.md)** — Implemented optimisations and remaining ideas.
+- **[Benchmarks](docs/benchmarks/)** — Latency and throughput measurements.
+
 ## Quick Start
 
 ### 1. VPS Setup
@@ -125,6 +131,28 @@ Update the Panel node configuration:
 - **Scheme**: `https` (via reverse proxy)
 - **Daemon port**: `443` (reverse proxy port)
 - **Allocations**: Use the WireGuard IP (e.g., `10.99.0.2`)
+
+### Outbound NAT for Steam Server Visibility
+
+Game servers (Rust, ARK, Valheim, etc.) register themselves with Steam's master
+server via outbound UDP. Steam records the **source IP** as the server's address
+in the public server browser. By default that source IP is the home network's
+WAN IP, where the ports aren't actually open — so the server appears
+unreachable.
+
+**Fix:** Route container outbound traffic through the WireGuard tunnel so Steam
+sees the VPS public IP as the source.
+
+**Required:**
+1. Home Pelican Docker subnet must NOT collide with VPS Pelican (use `172.28.0.0/16` on home if VPS uses `172.18.0.0/16`).
+2. Home: `ip rule add from <docker_subnet> lookup 200 priority 100` (table 200 has `default dev wg0`)
+3. Home: WireGuard agent peer `AllowedIPs = 0.0.0.0/0`
+4. VPS: `iptables -t nat -A POSTROUTING -s <wireguard_subnet> -o <public_iface> -j MASQUERADE`
+5. VPS: `iptables -I FORWARD 1 -i wg-gt -o <public_iface> -j ACCEPT` and reverse
+6. VPS: `ip route add <home_docker_subnet> dev wg-gt`
+
+See [docs/ADDING_GAME_SERVERS.md](docs/ADDING_GAME_SERVERS.md) for the full
+operational runbook including all the gotchas we hit.
 
 ### Reverse Proxy for Wings
 

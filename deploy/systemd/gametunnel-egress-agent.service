@@ -1,0 +1,30 @@
+[Unit]
+Description=GameTunnel egress routing (home/agent side — container outbound through tunnel + MSS clamp)
+After=gametunnel-agent.service
+Requires=gametunnel-agent.service
+
+# Adjust to match your environment:
+#   DOCKER_SUBNET — Pelican Docker subnet on this node (default: 172.28.0.0/16)
+#                   MUST NOT collide with the VPS Pelican subnet
+#   WG_IFACE — WireGuard interface (default: wg0)
+#   RETURN_TABLE — Routing table for tunnel return path (matches agent.yaml)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=DOCKER_SUBNET=172.28.0.0/16
+Environment=WG_IFACE=wg0
+Environment=RETURN_TABLE=200
+
+# Route container outbound through the WireGuard tunnel
+ExecStart=/bin/sh -c '/usr/sbin/ip rule add from ${DOCKER_SUBNET} lookup ${RETURN_TABLE} priority 100 2>/dev/null || true'
+ExecStart=-/bin/sh -c '/usr/sbin/ip route add ${DOCKER_SUBNET} dev ${WG_IFACE} table ${RETURN_TABLE}'
+
+# TCP MSS clamp on WireGuard (prevents fragmentation of large TCP packets like Steam CDN downloads)
+ExecStart=/bin/sh -c '/usr/sbin/iptables -t mangle -C FORWARD -o ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || /usr/sbin/iptables -t mangle -A FORWARD -o ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu'
+ExecStart=/bin/sh -c '/usr/sbin/iptables -t mangle -C FORWARD -i ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || /usr/sbin/iptables -t mangle -A FORWARD -i ${WG_IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu'
+
+ExecStop=-/bin/sh -c '/usr/sbin/ip rule del from ${DOCKER_SUBNET} lookup ${RETURN_TABLE} priority 100'
+
+[Install]
+WantedBy=multi-user.target
