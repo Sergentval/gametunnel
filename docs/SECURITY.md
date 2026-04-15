@@ -24,14 +24,39 @@ In `server.yaml`:
 
 ```yaml
 security:
-  enabled: true          # default true; omit the whole section to keep defaults
-  rate_limit_per_sec: 30 # new conns/packets per src IP per second (burst = 2x)
-  connection_limit: 100  # concurrent tracked flows per src IP
+  enabled: true           # default true; omit the whole section to keep defaults
+  rate_limit_per_sec: 30  # new conns/packets per src IP per second (burst = 2x)
+  connection_limit: 100   # concurrent tracked flows per src IP
+  exempt_ports: [22, 8090, 51820]  # dport list bypassed by rate/conn limits
 ```
 
 Tune `rate_limit_per_sec` higher for games with chatty UDP heartbeats, lower
 for single-player-per-connection games like Minecraft Java (where 30/s is
 already a very generous ceiling).
+
+### `exempt_ports` — why it exists
+
+The agent's WireGuard endpoint is a **single source IP** that aggregates every
+player's return traffic into one UDP flow on the transport port (default
+`51820`). A busy game server easily exceeds the per-source `rate_limit_per_sec`
+threshold legitimately — which would rate-limit-drop the operator's SSH,
+panel API, and WireGuard keepalives from that same home IP.
+
+`exempt_ports` installs `th dport <port> accept` rules **after** the `banned`
+check but **before** the rate-limit and connlimit rules. Banned IPs are still
+dropped everywhere; non-banned traffic to exempt ports skips the per-source
+thresholds.
+
+Default list:
+
+| Port  | Why                                                             |
+| ----- | --------------------------------------------------------------- |
+| 22    | SSH — operator access must not be rate-limited by game activity |
+| 8090  | GameTunnel HTTP API — agents heartbeat/list through this        |
+| 51820 | WireGuard transport — aggregated per-player return flow         |
+
+Set to `exempt_ports: []` to apply rate/conn limits uniformly (not
+recommended unless your control plane is on a separate IP/host).
 
 Tune `connection_limit` based on your player count and the game's connection
 model:
@@ -43,17 +68,22 @@ model:
 
 ## How it works (nftables sketch)
 
-The server creates three rules in chain `security_game_traffic` (all in the
-`ip gametunnel` table):
+The server creates rules in chain `security_game_traffic` (all in the
+`ip gametunnel` table), in this order:
 
 ```
-# 1. Hard ban list
+# 1. Hard ban list — always first, applies to every port
 ip saddr @banned drop
 
-# 2. Rate limit per source IP (dynamic set with 1-minute timeout)
+# 2. Control-plane exemption — one rule per exempt port
+th dport 22 accept
+th dport 8090 accept
+th dport 51820 accept
+
+# 3. Rate limit per source IP (dynamic set with 1-minute timeout)
 ip saddr update @rate_limit_game { ip saddr limit rate over 30/second burst 60 packets } drop
 
-# 3. Concurrent-flow limit on NEW connections
+# 4. Concurrent-flow limit on NEW connections
 ct state new meter flow { ip saddr ct count over 100 } drop
 ```
 

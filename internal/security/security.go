@@ -60,6 +60,17 @@ type Config struct {
 	// BanThreshold — number of rate-limit violations before auto-ban.
 	// 0 = disabled. Default: 0 (reserved for future fail2ban-style hook).
 	BanThreshold int
+	// ExemptPorts are destination ports that bypass the rate-limit and
+	// connlimit rules (but NOT the banned set). Intended for control-plane
+	// traffic that is not per-player game data — e.g. WG transport (51820),
+	// SSH (22), and the panel API (8090).
+	//
+	// Why this matters: the agent's WG endpoint is a single source IP that
+	// aggregates every player's return traffic. Under load (many concurrent
+	// players), its per-source packet rate legitimately exceeds the
+	// game-traffic threshold, which would rate-limit the operator out of
+	// SSH and break the control plane.
+	ExemptPorts []int
 }
 
 // DefaultConfig returns the baseline Config with safe defaults.
@@ -69,6 +80,7 @@ func DefaultConfig() Config {
 		NewConnRatePerSec: 30,
 		ConcurrentPerIP:   100,
 		BanThreshold:      0,
+		ExemptPorts:       []int{22, 8090, 51820},
 	}
 }
 
@@ -174,6 +186,26 @@ func (m *Manager) Setup() error {
 			&expr.Verdict{Kind: expr.VerdictDrop},
 		),
 	})
+
+	// ── Rule 1b: accept traffic to exempt (control-plane) ports ─────────
+	// Must run AFTER the banned check (so banned IPs still get dropped on
+	// every port) and BEFORE the rate/conn limits (so control-plane traffic
+	// isn't subject to per-IP game-traffic thresholds).
+	//
+	// Emits one rule per port rather than using a set — the list is short
+	// and static, and avoids requiring an additional named set.
+	for _, port := range m.cfg.ExemptPorts {
+		if port <= 0 || port > 0xFFFF {
+			continue
+		}
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: m.chain,
+			Exprs: append(nftconn.MatchDport(uint16(port)),
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			),
+		})
+	}
 
 	// ── Rule 2: per-source rate limit ───────────────────────────────────
 	// update @rate_limit_game { ip saddr limit rate over <R>/second burst <2R> } drop

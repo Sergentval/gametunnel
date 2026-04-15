@@ -149,10 +149,12 @@ func serverRun(args []string) {
 	// starting — we just log a warning and continue.
 	var secMgr *security.Manager
 	if nftConn != nil && cfg.Security.IsEnabled() {
+		exempt := cfg.Security.EffectiveExemptPorts()
 		secMgr = security.NewManager(nftConn, security.Config{
 			Enabled:           true,
 			NewConnRatePerSec: cfg.Security.RateLimit,
 			ConcurrentPerIP:   cfg.Security.ConnLimit,
+			ExemptPorts:       exempt,
 		})
 		if err := secMgr.Setup(); err != nil {
 			slog.Warn("security layer setup failed", "error", err)
@@ -160,7 +162,8 @@ func serverRun(args []string) {
 		} else {
 			slog.Info("security layer installed",
 				"rate_per_sec", cfg.Security.RateLimit,
-				"conn_limit", cfg.Security.ConnLimit)
+				"conn_limit", cfg.Security.ConnLimit,
+				"exempt_ports", exempt)
 		}
 	}
 

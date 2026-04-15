@@ -50,6 +50,25 @@ type SecuritySettings struct {
 	// ConnLimit is the max concurrent tracked flows per source IP.
 	// Default: 100.
 	ConnLimit int `yaml:"connection_limit"`
+	// ExemptPorts is the list of destination ports that bypass rate and
+	// connection limits. Banned IPs are still dropped. Use for control-plane
+	// ports (SSH, WG transport, panel API) whose packet rate from a single
+	// source legitimately exceeds per-IP game-traffic thresholds — most
+	// notably the agent's WG endpoint, which aggregates many players' return
+	// traffic into one source IP.
+	//
+	// Default: [22, 8090, 51820] (SSH, gametunnel API, WireGuard transport).
+	// Set to an empty list to disable all exemptions.
+	ExemptPorts *[]int `yaml:"exempt_ports,omitempty"`
+}
+
+// EffectiveExemptPorts returns the configured exempt ports, falling back to
+// the default list when the YAML key is omitted (nil pointer).
+func (s SecuritySettings) EffectiveExemptPorts() []int {
+	if s.ExemptPorts == nil {
+		return []int{22, 8090, 51820}
+	}
+	return *s.ExemptPorts
 }
 
 // IsEnabled reports whether the security chain should be installed.
