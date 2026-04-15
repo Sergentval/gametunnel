@@ -3,6 +3,14 @@
 
 server:
   # Address and port the REST API listens on.
+  #
+  # Bootstrap: leave as "0.0.0.0:8080" so new agents can register from any
+  #            source IP before the WireGuard tunnel is up.
+  #
+  # Post-bootstrap (RECOMMENDED): once all agents are registered, narrow
+  #            this to the server's WireGuard tunnel IP (e.g. "10.100.0.1:8080")
+  #            so only registered agents on the tunnel — and operators via
+  #            SSH port-forward — can reach the control-plane API.
   api_listen: "0.0.0.0:8080"
   # Path for persisting tunnel/agent state between restarts.
   state_file: "/var/lib/gametunnel/state.json"
@@ -30,6 +38,22 @@ tproxy:
   mark: "0x1"
   # Policy routing table number for return-path routes.
   routing_table: 100
+
+# Security layer: installs an nftables chain (priority raw-10) that
+# rate-limits inbound traffic per source IP and supports a "banned" set.
+# See docs/SECURITY.md for details (including manual ban commands and
+# recommended fail2ban config).
+security:
+  # Default: true. Set to false to skip installing the chain entirely.
+  enabled: true
+  # Max new connections/packets per source IP per second (burst = 2x).
+  # Legitimate game clients rarely exceed a few per second; 30 is a very
+  # safe ceiling that will drop UDP floods and A2S reflection attempts.
+  rate_limit_per_sec: 30
+  # Max concurrent tracked flows per source IP (kernel connlimit).
+  # Tune lower for games that keep one persistent connection per player,
+  # higher for games that churn many short-lived connections.
+  connection_limit: 100
 
 pelican:
   # Set to true to enable automatic tunnel sync from a Pelican panel.

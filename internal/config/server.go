@@ -37,6 +37,30 @@ type TProxySettings struct {
 	RoutingTable int    `yaml:"routing_table"`
 }
 
+// SecuritySettings holds configuration for the nftables security chain
+// that rate-limits inbound traffic and drops IPs in the "banned" set.
+type SecuritySettings struct {
+	// Enabled turns the security layer on/off. Default: true.
+	// Pointer so that an omitted YAML key is distinguishable from
+	// "enabled: false".
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// RateLimit is the max new-connections/packets per source IP per second
+	// (burst = 2x). Default: 30.
+	RateLimit int `yaml:"rate_limit_per_sec"`
+	// ConnLimit is the max concurrent tracked flows per source IP.
+	// Default: 100.
+	ConnLimit int `yaml:"connection_limit"`
+}
+
+// IsEnabled reports whether the security chain should be installed.
+// Defaults to true when the YAML omits `enabled`.
+func (s SecuritySettings) IsEnabled() bool {
+	if s.Enabled == nil {
+		return true
+	}
+	return *s.Enabled
+}
+
 // PelicanSettings holds configuration for the optional Pelican panel integration.
 type PelicanSettings struct {
 	Enabled             bool              `yaml:"enabled"`
@@ -57,6 +81,7 @@ type ServerConfig struct {
 	WireGuard WireGuardSettings `yaml:"wireguard"`
 	TProxy    TProxySettings    `yaml:"tproxy"`
 	Pelican   PelicanSettings   `yaml:"pelican"`
+	Security  SecuritySettings  `yaml:"security"`
 }
 
 // applyDefaults fills in zero-value fields with sensible defaults.
@@ -90,6 +115,15 @@ func (c *ServerConfig) applyDefaults() {
 	}
 	if c.Pelican.DefaultProtocol == "" {
 		c.Pelican.DefaultProtocol = "udp"
+	}
+	// Security defaults. Enabled uses a pointer so an omitted key defaults
+	// to true (see SecuritySettings.IsEnabled) — no default needs to be
+	// set on the pointer itself.
+	if c.Security.RateLimit == 0 {
+		c.Security.RateLimit = 30
+	}
+	if c.Security.ConnLimit == 0 {
+		c.Security.ConnLimit = 100
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/pelican"
 	"github.com/Sergentval/gametunnel/internal/routing"
+	"github.com/Sergentval/gametunnel/internal/security"
 	"github.com/Sergentval/gametunnel/internal/state"
 	"github.com/Sergentval/gametunnel/internal/tproxy"
 	"github.com/Sergentval/gametunnel/internal/tunnel"
@@ -140,6 +141,27 @@ func serverRun(args []string) {
 	var nftFwd *routing.NFTForwardRules
 	if nftConn != nil {
 		nftFwd = routing.NewNFTForwardRules(nftConn)
+	}
+
+	// ── Security layer (rate-limit + connection-limit + ban set) ───────────
+	// Only meaningful when nftables is available. Non-fatal on failure so an
+	// older kernel (missing connlimit) doesn't prevent the server from
+	// starting — we just log a warning and continue.
+	var secMgr *security.Manager
+	if nftConn != nil && cfg.Security.IsEnabled() {
+		secMgr = security.NewManager(nftConn, security.Config{
+			Enabled:           true,
+			NewConnRatePerSec: cfg.Security.RateLimit,
+			ConcurrentPerIP:   cfg.Security.ConnLimit,
+		})
+		if err := secMgr.Setup(); err != nil {
+			slog.Warn("security layer setup failed", "error", err)
+			secMgr = nil
+		} else {
+			slog.Info("security layer installed",
+				"rate_per_sec", cfg.Security.RateLimit,
+				"conn_limit", cfg.Security.ConnLimit)
+		}
 	}
 
 	// ── WebSocket hub ──────────────────────────────────────────────────────
@@ -319,6 +341,12 @@ func serverRun(args []string) {
 	}
 	_ = routing.CleanupForwardRules(cfg.WireGuard.Interface, nftFwd)
 	_ = routing.CleanupForwardRoute(cfg.TProxy.RoutingTable)
+
+	if secMgr != nil {
+		if err := secMgr.Cleanup(); err != nil {
+			slog.Warn("cleanup security chain", "error", err)
+		}
+	}
 
 	// Delete the nftables table (removes all chains/rules/sets atomically).
 	if nftConn != nil {

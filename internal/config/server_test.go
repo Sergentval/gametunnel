@@ -256,6 +256,73 @@ func TestAddAgentToConfig(t *testing.T) {
 	}
 }
 
+func TestSecurityDefaults_OmittedSection(t *testing.T) {
+	path := writeTemp(t, minimalYAML)
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Security.IsEnabled() {
+		t.Error("Security.IsEnabled() = false, want true (default when section omitted)")
+	}
+	if cfg.Security.RateLimit != 30 {
+		t.Errorf("Security.RateLimit = %d, want 30", cfg.Security.RateLimit)
+	}
+	if cfg.Security.ConnLimit != 100 {
+		t.Errorf("Security.ConnLimit = %d, want 100", cfg.Security.ConnLimit)
+	}
+}
+
+func TestSecurityDefaults_ExplicitDisable(t *testing.T) {
+	yaml := `
+agents:
+  - id: "agent-1"
+    token: "tok"
+wireguard:
+  private_key: "somekey"
+  subnet: "10.0.0.0/24"
+security:
+  enabled: false
+`
+	path := writeTemp(t, yaml)
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Security.IsEnabled() {
+		t.Error("Security.IsEnabled() = true, want false (explicitly disabled)")
+	}
+}
+
+func TestSecurityDefaults_CustomValues(t *testing.T) {
+	yaml := `
+agents:
+  - id: "agent-1"
+    token: "tok"
+wireguard:
+  private_key: "somekey"
+  subnet: "10.0.0.0/24"
+security:
+  enabled: true
+  rate_limit_per_sec: 50
+  connection_limit: 200
+`
+	path := writeTemp(t, yaml)
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Security.IsEnabled() {
+		t.Error("Security.IsEnabled() = false, want true")
+	}
+	if cfg.Security.RateLimit != 50 {
+		t.Errorf("Security.RateLimit = %d, want 50", cfg.Security.RateLimit)
+	}
+	if cfg.Security.ConnLimit != 200 {
+		t.Errorf("Security.ConnLimit = %d, want 200", cfg.Security.ConnLimit)
+	}
+}
+
 func TestAgentByID(t *testing.T) {
 	path := writeTemp(t, validYAML)
 	cfg, err := LoadServerConfig(path)

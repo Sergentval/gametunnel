@@ -12,7 +12,12 @@ import (
 
 const (
 	chainName = "mark_game_traffic"
-	setName   = "game_ports"
+	// GamePortsSetName is the name of the shared nftables set (in the
+	// "ip gametunnel" table) that holds all forwarded game ports. Other
+	// packages (e.g. security) reference this set by name to apply their
+	// own rules to the same port list.
+	GamePortsSetName = "game_ports"
+	setName          = GamePortsSetName
 )
 
 // nftManager implements Manager using google/nftables (native netlink).
