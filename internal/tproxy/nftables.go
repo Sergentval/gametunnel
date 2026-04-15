@@ -23,6 +23,9 @@ const (
 // nftManager implements Manager using google/nftables (native netlink).
 // It creates a single nftables set ("game_ports") and one rule that marks
 // all traffic matching ports in the set, instead of one iptables rule per port.
+//
+// mark is immutable after construction — set once in NewNFTManager from the
+// server config — so concurrent AddRule callers don't race on it.
 type nftManager struct {
 	conn  *nftconn.Conn
 	chain *nftables.Chain
@@ -32,10 +35,13 @@ type nftManager struct {
 	ready bool
 }
 
-// NewNFTManager creates a tproxy Manager backed by nftables.
-func NewNFTManager(conn *nftconn.Conn) Manager {
+// NewNFTManager creates a tproxy Manager backed by nftables. mark is the
+// firewall mark applied to traffic destined for forwarded game ports (passed
+// in from config; immutable for the manager's lifetime).
+func NewNFTManager(conn *nftconn.Conn, mark uint32) Manager {
 	return &nftManager{
 		conn:  conn,
+		mark:  mark,
 		ports: make(map[int]bool),
 	}
 }
@@ -92,16 +98,9 @@ func (m *nftManager) ensureInfra() error {
 
 // AddRule adds a port to the game_ports set so traffic to that port is marked.
 // The protocol parameter is ignored because both TCP and UDP are matched by
-// the single rule (transport header dport works for both).
-func (m *nftManager) AddRule(_ string, port int, mark string) error {
-	if m.mark == 0 {
-		markVal, err := parseHexMark(mark)
-		if err != nil {
-			return fmt.Errorf("parse mark %q: %w", mark, err)
-		}
-		m.mark = markVal
-	}
-
+// the single rule (transport header dport works for both). The mark parameter
+// is ignored here; the mark is fixed at construction time.
+func (m *nftManager) AddRule(_ string, port int, _ string) error {
 	if err := m.ensureInfra(); err != nil {
 		return fmt.Errorf("ensure nftables infra: %w", err)
 	}

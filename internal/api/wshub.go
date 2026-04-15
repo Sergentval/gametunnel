@@ -4,41 +4,78 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/gorilla/websocket"
 )
 
+// wsConn wraps a *websocket.Conn with a per-connection write mutex.
+// gorilla/websocket forbids concurrent calls to the write methods on the same
+// connection; serialising writes here prevents corrupted frames and panics.
+type wsConn struct {
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+}
+
+// WriteJSON serialises concurrent callers around the underlying conn.
+func (c *wsConn) WriteJSON(v any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteJSON(v)
+}
+
+// WriteControl serialises concurrent callers around the underlying conn.
+func (c *wsConn) WriteControl(messageType int, data []byte, deadline time.Time) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteControl(messageType, data, deadline)
+}
+
+// Close closes the underlying websocket connection.
+func (c *wsConn) Close() error {
+	return c.conn.Close()
+}
+
 // WSHub manages active WebSocket connections keyed by agent ID.
 type WSHub struct {
 	mu    sync.RWMutex
-	conns map[string]*websocket.Conn
+	conns map[string]*wsConn
 }
 
 // NewWSHub returns an initialised WSHub.
 func NewWSHub() *WSHub {
 	return &WSHub{
-		conns: make(map[string]*websocket.Conn),
+		conns: make(map[string]*wsConn),
 	}
 }
 
-// Register adds or replaces the WebSocket connection for an agent.
-// If a previous connection exists it is closed before replacement.
-func (h *WSHub) Register(agentID string, conn *websocket.Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// Register adds or replaces the WebSocket connection for an agent and returns
+// the write-serialised wrapper. If a previous connection exists it is closed
+// before replacement.
+func (h *WSHub) Register(agentID string, conn *websocket.Conn) *wsConn {
+	wrapped := &wsConn{conn: conn}
 
-	if old, ok := h.conns[agentID]; ok {
+	h.mu.Lock()
+	old, hadOld := h.conns[agentID]
+	h.conns[agentID] = wrapped
+	h.mu.Unlock()
+
+	if hadOld {
 		_ = old.Close()
 	}
-	h.conns[agentID] = conn
+	return wrapped
 }
 
-// Unregister removes the connection for an agent (if it matches).
-func (h *WSHub) Unregister(agentID string) {
+// Unregister removes the connection for an agent only if it matches wrapped.
+// Passing the wrapper returned by Register prevents a stale read-loop from
+// deleting a freshly-registered replacement connection.
+func (h *WSHub) Unregister(agentID string, wrapped *wsConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.conns, agentID)
+	if current, ok := h.conns[agentID]; ok && current == wrapped {
+		delete(h.conns, agentID)
+	}
 }
 
 // Send pushes an event to a single agent. Returns an error if the agent has
@@ -62,7 +99,7 @@ func (h *WSHub) Send(agentID string, event models.WSEvent) error {
 // but do not stop the broadcast.
 func (h *WSHub) Broadcast(event models.WSEvent) error {
 	h.mu.RLock()
-	snapshot := make(map[string]*websocket.Conn, len(h.conns))
+	snapshot := make(map[string]*wsConn, len(h.conns))
 	for k, v := range h.conns {
 		snapshot[k] = v
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"net"
@@ -69,6 +70,18 @@ func (r *Registry) Register(id, publicKey string) (RegisterResponse, error) {
 	if existing, exists := r.agents[id]; exists {
 		// Re-registration: reuse the existing IP.
 		assignedIP = existing.AssignedIP
+
+		// If the agent's public key changed (e.g. key regenerated after a
+		// restart without persisted key material), remove the stale peer
+		// BEFORE adding the new one. Otherwise the old peer lingers on the
+		// WireGuard interface with overlapping AllowedIPs and may capture
+		// routing decisions away from the new peer.
+		if existing.PublicKey != "" && existing.PublicKey != publicKey {
+			if err := r.wg.RemovePeer(r.wgIface, existing.PublicKey); err != nil {
+				slog.Warn("remove stale peer on key change",
+					"agent_id", id, "error", err)
+			}
+		}
 	} else {
 		// New registration: allocate an IP.
 		ip := r.allocateIP()
@@ -196,9 +209,20 @@ func (r *Registry) CheckTimeouts(timeout time.Duration) []string {
 func (r *Registry) LoadFromState(agents []models.Agent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	var highestIP net.IP
 	for _, a := range agents {
 		r.agents[a.ID] = a
 		r.ipPool[a.AssignedIP] = true
+
+		if ip := net.ParseIP(a.AssignedIP); ip != nil {
+			ip4 := ip.To4()
+			if ip4 != nil {
+				if highestIP == nil || bytes.Compare(ip4, highestIP) > 0 {
+					highestIP = ip4
+				}
+			}
+		}
 
 		// Re-add WireGuard peer for restored agent. Best-effort: we don't
 		// have the agent's endpoint (it's dynamic, learned on re-registration),
@@ -213,6 +237,18 @@ func (r *Registry) LoadFromState(agents []models.Agent) {
 			if err := r.wg.AddPeer(r.wgIface, peerCfg, r.keepaliveSeconds); err != nil {
 				slog.Warn("restore wireguard peer", "agent_id", a.ID, "error", err)
 			}
+		}
+	}
+
+	// Advance nextIP past the highest restored IP so future allocations
+	// start from the correct position instead of scanning from .2 every time.
+	// Only advance if the next candidate still belongs to the subnet; if the
+	// restored set already covers the tail of the subnet, allocateIP's
+	// wrap-around path will handle future allocation.
+	if highestIP != nil {
+		next := incrementIP(highestIP)
+		if r.subnet.Contains(next) {
+			r.nextIP = next
 		}
 	}
 }

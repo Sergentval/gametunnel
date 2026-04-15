@@ -338,30 +338,54 @@ func (a *nftAgent) cleanupDNATForPort(port int, proto string) {
 }
 
 // ruleMatchesIFName checks if a rule contains a meta iifname comparison
-// matching the given interface name.
+// matching the given interface name. Matches on CONTEXT: only a Cmp that
+// directly follows a Meta{IIFNAME} expression counts — prevents false
+// positives on unrelated 16-byte literals (e.g. operator-added rules).
 func ruleMatchesIFName(rule *nftables.Rule, ifname string) bool {
 	target := make([]byte, 16) // IFNAMSIZ
 	copy(target, ifname)
-	for _, e := range rule.Exprs {
-		if cmp, ok := e.(*expr.Cmp); ok {
-			if len(cmp.Data) == 16 && string(cmp.Data) == string(target) {
-				return true
-			}
+	for i, e := range rule.Exprs {
+		meta, ok := e.(*expr.Meta)
+		if !ok || meta.Key != expr.MetaKeyIIFNAME {
+			continue
+		}
+		if i+1 >= len(rule.Exprs) {
+			continue
+		}
+		cmp, ok := rule.Exprs[i+1].(*expr.Cmp)
+		if !ok || len(cmp.Data) != 16 {
+			continue
+		}
+		if string(cmp.Data) == string(target) {
+			return true
 		}
 	}
 	return false
 }
 
-// ruleMatchesPort checks if a rule's expressions contain a port comparison
-// matching the given port. This is a heuristic: we look for Cmp expressions
-// with 2-byte data matching the port in big-endian.
+// ruleMatchesPort checks if a rule's expressions match a destination-port
+// comparison on the given port. Matches on CONTEXT: the Cmp must immediately
+// follow a Payload expression that loads two bytes from the transport header
+// at offset 2 (L4 dport). This avoids matching any 2-byte Cmp literal.
 func ruleMatchesPort(rule *nftables.Rule, port int) bool {
 	portBytes := nftconn.PortBytes(port)
-	for _, e := range rule.Exprs {
-		if cmp, ok := e.(*expr.Cmp); ok {
-			if len(cmp.Data) == 2 && cmp.Data[0] == portBytes[0] && cmp.Data[1] == portBytes[1] {
-				return true
-			}
+	for i, e := range rule.Exprs {
+		pl, ok := e.(*expr.Payload)
+		if !ok {
+			continue
+		}
+		if pl.Base != expr.PayloadBaseTransportHeader || pl.Offset != 2 || pl.Len != 2 {
+			continue
+		}
+		if i+1 >= len(rule.Exprs) {
+			continue
+		}
+		cmp, ok := rule.Exprs[i+1].(*expr.Cmp)
+		if !ok || len(cmp.Data) != 2 {
+			continue
+		}
+		if cmp.Data[0] == portBytes[0] && cmp.Data[1] == portBytes[1] {
+			return true
 		}
 	}
 	return false

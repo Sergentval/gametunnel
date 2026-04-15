@@ -176,6 +176,21 @@ func (c *Controller) runWebSocket() error {
 	}
 	defer conn.Close()
 
+	// gorilla/websocket forbids concurrent writes on the same conn. The ping
+	// goroutine and the stop-triggered close message can both fire at once, so
+	// we serialise all writes through writeMu.
+	var writeMu sync.Mutex
+	writeControl := func(messageType int, data []byte, deadline time.Time) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteControl(messageType, data, deadline)
+	}
+	writeMessage := func(messageType int, data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteMessage(messageType, data)
+	}
+
 	slog.Info("websocket connected")
 
 	// Start pinger goroutine (replaces HTTP heartbeat).
@@ -189,7 +204,7 @@ func (c *Controller) runWebSocket() error {
 			case <-c.stopCh:
 				return
 			case <-ticker.C:
-				if err := conn.WriteControl(
+				if err := writeControl(
 					websocket.PingMessage, nil,
 					time.Now().Add(5*time.Second),
 				); err != nil {
@@ -227,7 +242,7 @@ func (c *Controller) runWebSocket() error {
 	for {
 		select {
 		case <-c.stopCh:
-			_ = conn.WriteMessage(
+			_ = writeMessage(
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 			)
@@ -368,7 +383,12 @@ func (c *Controller) createTunnel(t models.Tunnel) error {
 	containerIP := c.detectContainerIP(t.PublicPort)
 	if containerIP != "" {
 		c.containerIPs[t.ID] = containerIP
-		c.setupDNAT(t, containerIP)
+		if err := c.setupDNAT(t, containerIP); err != nil {
+			// DNAT failure means traffic arriving on wg won't reach the
+			// container — don't pretend the tunnel is healthy. The caller
+			// in syncTunnels skips adding to activeTunnels on error.
+			return fmt.Errorf("setup DNAT for tunnel %q port %d: %w", t.Name, t.PublicPort, err)
+		}
 	} else {
 		slog.Warn("no Docker container found for port, skipping DNAT", "port", t.PublicPort)
 	}
@@ -388,7 +408,9 @@ func (c *Controller) createTunnel(t models.Tunnel) error {
 }
 
 // detectContainerIP uses the Docker Engine SDK to find a container listening on
-// the given port and returns its bridge IP. Returns "" if not found.
+// the given port and returns its bridge IP. Returns "" if not found. Each
+// Docker call is bounded by a short timeout so a hung socket can't stall the
+// whole tunnel sync loop.
 func (c *Controller) detectContainerIP(port int) string {
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
@@ -397,8 +419,11 @@ func (c *Controller) detectContainerIP(port int) string {
 	}
 	defer cli.Close()
 
-	ctx := context.Background()
-	containers, err := cli.ContainerList(ctx, container.ListOptions{})
+	const dockerCallTimeout = 2 * time.Second
+
+	listCtx, listCancel := context.WithTimeout(context.Background(), dockerCallTimeout)
+	defer listCancel()
+	containers, err := cli.ContainerList(listCtx, container.ListOptions{})
 	if err != nil {
 		slog.Debug("list containers", "error", err)
 		return ""
@@ -408,7 +433,9 @@ func (c *Controller) detectContainerIP(port int) string {
 		for _, p := range ctr.Ports {
 			if int(p.PublicPort) == port {
 				// Found the container, inspect for bridge IP.
-				info, err := cli.ContainerInspect(ctx, ctr.ID)
+				inspectCtx, inspectCancel := context.WithTimeout(context.Background(), dockerCallTimeout)
+				info, err := cli.ContainerInspect(inspectCtx, ctr.ID)
+				inspectCancel()
 				if err != nil {
 					slog.Debug("inspect container", "id", ctr.ID[:12], "error", err)
 					return ""
@@ -425,22 +452,25 @@ func (c *Controller) detectContainerIP(port int) string {
 }
 
 // setupDNAT adds DNAT and POSTROUTING RETURN rules for a tunnel.
-// Uses nftables when available, falling back to iptables.
-func (c *Controller) setupDNAT(t models.Tunnel, containerIP string) {
+// Uses nftables when available, falling back to iptables. Returns an error if
+// the DNAT rule itself can't be installed — without DNAT, incoming game
+// traffic would be black-holed, so callers must not consider the tunnel active.
+// POSTROUTING RETURN failures are logged but not fatal: masquerade still works,
+// only the source-IP preservation is degraded.
+func (c *Controller) setupDNAT(t models.Tunnel, containerIP string) error {
 	if c.nftAgent != nil {
 		if err := c.nftAgent.setupDNAT(t, containerIP); err != nil {
-			slog.Warn("nftables DNAT rule", "error", err)
+			return fmt.Errorf("nftables DNAT rule: %w", err)
 		}
 		if err := c.nftAgent.setupPostRoutingReturn(); err != nil {
 			slog.Warn("nftables POSTROUTING RETURN rule", "error", err)
 		}
-		return
+		return nil
 	}
 
 	ipt, err := iptables.New()
 	if err != nil {
-		slog.Warn("create iptables client for DNAT", "error", err)
-		return
+		return fmt.Errorf("create iptables client for DNAT: %w", err)
 	}
 
 	proto := string(t.Protocol)
@@ -456,7 +486,7 @@ func (c *Controller) setupDNAT(t models.Tunnel, containerIP string) {
 		"--to-destination", dest,
 	}
 	if err := ipt.AppendUnique("nat", "PREROUTING", dnatRule...); err != nil {
-		slog.Warn("add DNAT rule", "interface", c.wgIface, "port", portStr, "error", err)
+		return fmt.Errorf("add DNAT rule (interface=%s port=%s): %w", c.wgIface, portStr, err)
 	}
 
 	// RETURN in POSTROUTING for game reply traffic only (matched by connmark).
@@ -469,6 +499,7 @@ func (c *Controller) setupDNAT(t models.Tunnel, containerIP string) {
 	if err := ipt.InsertUnique("nat", "POSTROUTING", 1, returnRule...); err != nil {
 		slog.Warn("add POSTROUTING RETURN rule", "interface", c.wgIface, "error", err)
 	}
+	return nil
 }
 
 // setupForwardRules adds FORWARD accept rules for the tunnel interface.
@@ -607,14 +638,19 @@ func (c *Controller) cleanupConnmarkRouting() {
 		return
 	}
 
-	// Remove all connmark rules (both port-specific set rules and restore rule).
-	rules, _ := ipt.List("mangle", "PREROUTING")
-	for _, rule := range rules {
-		if strings.Contains(rule, "CONNMARK") && (strings.Contains(rule, "0x2") || strings.Contains(rule, c.dockerBridge)) {
-			spec := strings.TrimPrefix(rule, "-A PREROUTING ")
-			parts := strings.Fields(spec)
-			_ = ipt.Delete("mangle", "PREROUTING", parts...)
-		}
+	// Delete the shared connmark restore-mark rule using the EXACT spec we
+	// added in setupConnmarkRouting (mirrors the `restoreMark` definition).
+	// Port-specific connmark SET rules are cleaned per-tunnel in cleanupDNAT;
+	// by the time this runs (ref count == 0) they should already be gone.
+	// Using the exact spec avoids string-matching heuristics that could
+	// delete unrelated rules (e.g. operator- or fail2ban-added CONNMARK rules).
+	restoreMark := []string{
+		"-i", c.dockerBridge,
+		"-j", "CONNMARK", "--restore-mark",
+		"--nfmask", "0x2", "--ctmask", "0x2",
+	}
+	if exists, _ := ipt.Exists("mangle", "PREROUTING", restoreMark...); exists {
+		_ = ipt.Delete("mangle", "PREROUTING", restoreMark...)
 	}
 }
 

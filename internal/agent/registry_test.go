@@ -109,9 +109,38 @@ func TestRegistry_RegisterDuplicate(t *testing.T) {
 		t.Error("new WireGuard peer not registered")
 	}
 
+	// Stale peer with the OLD key must be gone — otherwise WireGuard would
+	// have two peers with overlapping AllowedIPs and routing becomes
+	// undefined (fix #6).
+	if wg.peers["pubkey-v1"] {
+		t.Error("stale WireGuard peer (old key) should be removed on key change")
+	}
+
 	// Only one agent in registry.
 	if len(r.ListAgents()) != 1 {
 		t.Errorf("expected 1 agent, got %d", len(r.ListAgents()))
+	}
+}
+
+func TestRegistry_LoadFromStateAdvancesNextIP(t *testing.T) {
+	r, _ := newTestRegistry(t)
+
+	restored := []models.Agent{
+		{ID: "a1", PublicKey: "k1", AssignedIP: "10.200.0.2"},
+		{ID: "a5", PublicKey: "k5", AssignedIP: "10.200.0.5"},
+		{ID: "a3", PublicKey: "k3", AssignedIP: "10.200.0.3"},
+	}
+	r.LoadFromState(restored)
+
+	// Next new registration should get .6 — the slot after the highest
+	// restored IP (.5), not .4 (which would be the first free slot via
+	// scan-from-.2) nor the old default starting point .2.
+	resp, err := r.Register("new-agent", "pubkey-new")
+	if err != nil {
+		t.Fatalf("Register after restore: %v", err)
+	}
+	if resp.AssignedIP != "10.200.0.6" {
+		t.Errorf("expected .6 after restore with highest=.5, got %s", resp.AssignedIP)
 	}
 }
 

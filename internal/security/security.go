@@ -124,7 +124,10 @@ func (m *Manager) Setup() error {
 		Priority: &priority,
 	})
 
-	// Flush any pre-existing rules if we're re-running Setup.
+	// On re-entry (m.ready == true), flush rules but keep the named sets.
+	// nftables' AddSet on an existing set returns "already exists", so sets
+	// are created only on the first Setup call. The set objects themselves
+	// are re-constructed every call so the rules below can reference them.
 	if m.ready {
 		nft.FlushChain(m.chain)
 	}
@@ -139,8 +142,10 @@ func (m *Manager) Setup() error {
 		HasTimeout: true,
 		Timeout:    time.Minute,
 	}
-	if err := nft.AddSet(m.rlSet, nil); err != nil {
-		return fmt.Errorf("create rate-limit set: %w", err)
+	if !m.ready {
+		if err := nft.AddSet(m.rlSet, nil); err != nil {
+			return fmt.Errorf("create rate-limit set: %w", err)
+		}
 	}
 
 	// Named set: banned — keyed on ipv4 saddr, static (no dynamic/timeout).
@@ -150,8 +155,10 @@ func (m *Manager) Setup() error {
 		Name:    BannedSetName,
 		KeyType: nftables.TypeIPAddr,
 	}
-	if err := nft.AddSet(m.banSet, nil); err != nil {
-		return fmt.Errorf("create banned set: %w", err)
+	if !m.ready {
+		if err := nft.AddSet(m.banSet, nil); err != nil {
+			return fmt.Errorf("create banned set: %w", err)
+		}
 	}
 
 	// ── Rule 1: ip saddr @banned -> drop ────────────────────────────────

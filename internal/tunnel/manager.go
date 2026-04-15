@@ -65,24 +65,29 @@ func NewManager(tp tproxy.Manager, rt routing.Manager, mark string, table int, l
 // Create builds a new tunnel: allocates an ID, adds the TPROXY MARK rule,
 // sets up the WireGuard forward route, and registers the tunnel in memory.
 // Game traffic is forwarded directly through WireGuard (no GRE).
+//
+// The OnTunnelChange callback is invoked AFTER m.mu is released so a slow
+// subscriber (e.g. a blocked WebSocket write) can't stall the tunnel manager.
 func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Port uniqueness check.
 	if existing, used := m.portUsed[req.PublicPort]; used {
+		m.mu.Unlock()
 		return models.Tunnel{}, fmt.Errorf("port %d already used by tunnel %s", req.PublicPort, existing)
 	}
 
 	// Generate random 8-byte hex ID.
 	idBytes := make([]byte, 8)
 	if _, err := rand.Read(idBytes); err != nil {
+		m.mu.Unlock()
 		return models.Tunnel{}, fmt.Errorf("generate tunnel ID: %w", err)
 	}
 	id := hex.EncodeToString(idBytes)
 
 	// Add the MARK rule.
 	if err := m.tproxy.AddRule(string(req.Protocol), req.PublicPort, m.mark); err != nil {
+		m.mu.Unlock()
 		return models.Tunnel{}, fmt.Errorf("add mark rule for port %d: %w", req.PublicPort, err)
 	}
 
@@ -114,36 +119,43 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	m.tunnels[id] = t
 	m.portUsed[req.PublicPort] = id
 
-	if m.OnTunnelChange != nil {
-		m.OnTunnelChange("tunnel_created", t)
-	}
+	cb := m.OnTunnelChange
+	m.mu.Unlock()
 
+	if cb != nil {
+		cb("tunnel_created", t)
+	}
 	return t, nil
 }
 
 // Delete removes a tunnel by ID, cleaning up the TPROXY rule.
 // The WireGuard forward route and FORWARD rules are shared across tunnels
 // and are cleaned up on server shutdown, not per-tunnel deletion.
+//
+// The OnTunnelChange callback is invoked AFTER m.mu is released (see Create).
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	t, ok := m.tunnels[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("tunnel %q not found", id)
 	}
 
 	if err := m.tproxy.RemoveRule(string(t.Protocol), t.PublicPort, m.mark); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("remove mark rule for tunnel %s: %w", id, err)
 	}
 
 	delete(m.tunnels, id)
 	delete(m.portUsed, t.PublicPort)
 
-	if m.OnTunnelChange != nil {
-		m.OnTunnelChange("tunnel_deleted", t)
-	}
+	cb := m.OnTunnelChange
+	m.mu.Unlock()
 
+	if cb != nil {
+		cb("tunnel_deleted", t)
+	}
 	return nil
 }
 

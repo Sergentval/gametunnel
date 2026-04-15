@@ -46,18 +46,20 @@ func (h *WSHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Register this connection (closes any previous one).
-	h.hub.Register(agentID, conn)
+	wrapped := h.hub.Register(agentID, conn)
 	slog.Info("websocket connected", "agent_id", agentID)
 
 	const readTimeout = 60 * time.Second
 
 	// Ping from agent: reset deadline, update heartbeat, reply with pong.
+	// Pong is written via the wrapped conn so it is serialised against
+	// concurrent Send/Broadcast writers.
 	conn.SetPingHandler(func(appData string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		if err := h.registry.Heartbeat(agentID); err != nil {
 			slog.Warn("ws ping heartbeat failed", "agent_id", agentID, "error", err)
 		}
-		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+		return wrapped.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
 	})
 
 	// Pong from agent (if agent responds to server pings).
@@ -76,7 +78,7 @@ func (h *WSHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		conn.SetReadDeadline(time.Now().Add(readTimeout))
 	}
 
-	h.hub.Unregister(agentID)
+	h.hub.Unregister(agentID, wrapped)
 	_ = conn.Close()
 	slog.Info("websocket disconnected", "agent_id", agentID)
 }

@@ -30,6 +30,14 @@ func NewNFTForwardRules(conn *nftconn.Conn) *NFTForwardRules {
 // interface and the tunnel device (WireGuard), in both directions.
 // Uses a dedicated chain with priority -1 so rules fire before Docker's filter.
 func (f *NFTForwardRules) EnsureForwardRules(device string) error {
+	// Resolve the public interface BEFORE taking the nftconn lock. The
+	// netlink RouteList syscall can block under network namespace disruption
+	// and any concurrent nftables operation would stall waiting on our lock.
+	pubIface, err := defaultRouteIface()
+	if err != nil {
+		return fmt.Errorf("detect public interface: %w", err)
+	}
+
 	f.conn.Lock()
 	defer f.conn.Unlock()
 
@@ -49,12 +57,6 @@ func (f *NFTForwardRules) EnsureForwardRules(device string) error {
 	} else {
 		// Flush existing rules to avoid duplicates on re-application.
 		nft.FlushChain(f.chain)
-	}
-
-	// Determine the public interface.
-	pubIface, err := defaultRouteIface()
-	if err != nil {
-		return fmt.Errorf("detect public interface: %w", err)
 	}
 
 	// public → tunnel device: ACCEPT
