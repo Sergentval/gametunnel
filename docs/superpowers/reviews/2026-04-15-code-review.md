@@ -236,3 +236,37 @@ All CRITICAL + top 2 HIGH (#1, #2, #3, #4, #5) can land as a single commit — t
 - Reviewer transcript: consolidated into this document
 - Related: `IMPROVEMENTS.md` (implementation roadmap, many items marked ✅ done)
 - Related: `docs/superpowers/specs/2026-04-12-gametunnel-design.md` (original design)
+
+---
+
+## Addendum — 2026-04-16: Security chain bandwidth bug
+
+**Discovered during post-fix VPS speed test.**
+
+After all 12 review findings were addressed (commit `51f8a15`), a speed test from the VPS to `proof.ovh.net` showed sustained download at **6 Mbps** — 10× slower than expected for an OVH VPS. The `rate_limit_game` dynamic set contained 40+ legitimate CDN IPs (GitHub, Cloudflare, Docker Hub, apt mirrors, etc.), all being rate-limited.
+
+### Two sub-bugs, one root cause
+
+**Sub-bug 1 — missing ct state accept** (commit `622e478`, `fix(security): accept ct state established/related before rate limit`):
+The chain rate-limited every source IP at 200 pps without distinguishing new-connection packets from return traffic of our own outbound connections. Added `ct state established,related accept` before the rate-limit.
+
+**Sub-bug 2 — chain priority before conntrack** (commit `3f59b57`, `fix(security): move chain priority to -175 (after conntrack)`):
+The chain hooked at priority `raw - 10` (`-310`), which runs **before** the Linux conntrack hook at `-200`. At that point `ct state` returns UNTRACKED for every packet, so the sub-bug-1 accept rule never matched. Moved the chain to priority `-175` — after conntrack, before mangle.
+
+Both fixes combined took the VPS from **~6 Mbps → 57-61 Mbps** (9× improvement). Tunnel latency unchanged (8.0 → 8.1 ms RTT, 0% loss).
+
+### Lesson for future nftables rules
+
+**Any rule using `ct state`, `ct mark`, or `ct count` must hook at priority ≥ `-199`.** Priority table:
+
+| Priority | Hook      | State of `ct` |
+|----------|-----------|---------------|
+| `-300`   | raw       | UNTRACKED — before conntrack |
+| `-200`   | conntrack | conntrack populates state here |
+| `≥ -199` | anywhere  | `ct state` valid and readable |
+
+This should be added to the security chain design notes: never use raw-priority hooks if you need conntrack state.
+
+### Docs updated
+
+- `docs/SECURITY.md` — corrected priority (`-310` → `-175`), added conntrack interaction table, added established/related accept rule to the chain sketch.

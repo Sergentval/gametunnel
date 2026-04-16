@@ -13,10 +13,23 @@ across the WireGuard tunnel to the backend.
 | Connection exhaustion / slow-loris    | Per-source-IP concurrent-flow cap (`connection_limit`) |
 | Known-bad IPs (scanners, booters)     | `banned` named set — drop on sight            |
 
-The chain hooks into `prerouting` at priority `raw - 10` (`-310`). That is
-**before** GameTunnel's own mark chain (priority `mangle = -150`), so dropped
-packets never enter the forwarding path at all — no WireGuard encryption
-cycles, no return-path routing, no CPU on the agent.
+The chain hooks into `prerouting` at priority `-175`. The priority is chosen
+carefully to sit between two kernel hooks:
+
+| Priority | Hook        | What happens                                         |
+| -------- | ----------- | ---------------------------------------------------- |
+| `-300`   | raw         | NOTRACK decisions                                    |
+| `-200`   | conntrack   | `ct state` populated (NEW / ESTABLISHED / RELATED)   |
+| **`-175`** | **security** | **Ban / ct-state accept / rate limit / connlimit** |
+| `-150`   | mangle      | GameTunnel mark chain (game ports → fwmark)          |
+| `-100`   | nat         | DNAT                                                 |
+
+Running **after** conntrack (`-200`) is mandatory: `ct state` returns
+`UNTRACKED` before the conntrack hook, which makes the established/related
+accept rule never match and causes every remote CDN to get throttled to
+200 pps. Running **before** mangle (`-150`) preserves the design invariant
+that bad traffic is dropped before entering the forwarding path — no
+WireGuard encryption cycles, no return-path routing, no CPU on the agent.
 
 ## Configuration
 
@@ -72,20 +85,31 @@ The server creates rules in chain `security_game_traffic` (all in the
 `ip gametunnel` table), in this order:
 
 ```
-# 1. Hard ban list — always first, applies to every port
+# 1. Hard ban list — always first, applies to every port and state
 ip saddr @banned drop
 
-# 2. Control-plane exemption — one rule per exempt port
+# 2. Established/related accept — return traffic for outbound connections
+#    (CDN downloads, apt, docker pulls, game-server outbound queries)
+#    bypasses rate/conn limits so legitimate traffic isn't throttled.
+ct state established,related accept
+
+# 3. Control-plane exemption — one rule per exempt port
 th dport 22 accept
 th dport 8090 accept
 th dport 51820 accept
 
-# 3. Rate limit per source IP (dynamic set with 1-minute timeout)
+# 4. Rate limit per source IP on NEW inbound packets
+#    (dynamic set with 1-minute timeout)
 ip saddr update @rate_limit_game { ip saddr limit rate over 30/second burst 60 packets } drop
 
-# 4. Concurrent-flow limit on NEW connections
+# 5. Concurrent-flow limit on NEW connections
 ct state new meter flow { ip saddr ct count over 100 } drop
 ```
+
+Only **new inbound** connections are subject to the per-source
+thresholds — that is where real abuse lives. Return packets for our
+own outbound connections are already tracked by conntrack as
+`established,related` and accepted at rule 2.
 
 The chain is destroyed atomically on `gametunnel` shutdown (the whole
 `gametunnel` table is deleted).
