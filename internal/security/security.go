@@ -6,22 +6,25 @@
 // the mark chain (priority mangle = -150). Bad traffic is dropped before any
 // forwarding decision is made.
 //
-// Rules installed (all applied to new inbound connections on the prerouting
-// hook):
+// Rules installed on the prerouting hook (in order):
 //
 //  1. Drop everything from IPs in the "banned" named set (manually populated
 //     by an operator or fail2ban).
-//  2. Drop packets whose source IP exceeds NewConnRatePerSec per second
+//  2. Accept ct state established/related. Return traffic for outbound
+//     connections we initiated (CDN downloads, apt, docker, game server
+//     queries) bypasses the rate/conn limits so they don't throttle legit
+//     traffic at ~290 KB/s per remote endpoint.
+//  3. Accept traffic to exempt control-plane dports (SSH, panel API, WG).
+//  4. Drop packets whose source IP exceeds NewConnRatePerSec per second
 //     (burst = 2x rate). Uses a dynamic set keyed on ip saddr with an
-//     embedded limit expression.
-//  3. Drop new connections when the source IP has more than ConcurrentPerIP
+//     embedded limit expression. Applies only to NEW inbound connections
+//     (established are accepted above).
+//  5. Drop new connections when the source IP has more than ConcurrentPerIP
 //     concurrent tracked flows (requires kernel 4.10+ for connlimit).
 //
 // The security chain is intentionally protocol-agnostic: it covers both TCP
-// and UDP game traffic as well as WireGuard's UDP transport. Legitimate
-// operator traffic (SSH, panel API, etc.) is subject to the same per-source
-// thresholds but the defaults (30 new conns/sec) are well above normal human
-// traffic.
+// and UDP game traffic as well as WireGuard's UDP transport. Only new
+// inbound connections are subject to the per-source thresholds.
 package security
 
 import (
@@ -185,6 +188,33 @@ func (m *Manager) Setup() error {
 			},
 			&expr.Verdict{Kind: expr.VerdictDrop},
 		),
+	})
+
+	// ── Rule 1a: accept established / related connections ──────────────
+	// Standard firewall pattern: return traffic for outbound connections
+	// we initiated (HTTPS to CDNs, apt updates, docker pulls, game server
+	// outbound queries) arrives at prerouting with ct state ESTABLISHED.
+	// Without this, the rate-limit below treats each remote CDN IP as a
+	// "source" and throttles legitimate return traffic to 200 pps per IP,
+	// capping our outbound download speed at ~290 KB/s per remote endpoint.
+	//
+	// Only genuinely NEW inbound connections should be subject to the
+	// rate-limit and connlimit rules — that's where actual abuse lives.
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: m.chain,
+		Exprs: []expr.Any{
+			&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
+			&expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            4,
+				Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
+				Xor:            binaryutil.NativeEndian.PutUint32(0),
+			},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
 	})
 
 	// ── Rule 1b: accept traffic to exempt (control-plane) ports ─────────
