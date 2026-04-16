@@ -128,9 +128,15 @@ func (m *Manager) Setup() error {
 	table := m.conn.Table()
 	nft := m.conn.Raw()
 
-	// Priority: raw (-300) minus 10 = -310. Runs before the mark chain
-	// (priority mangle = -150) so dropped traffic never gets forwarded.
-	priority := nftables.ChainPriority(-310)
+	// Priority: -175 — between conntrack (-200) and mangle (-150).
+	//
+	// Must run AFTER conntrack or `ct state` returns UNTRACKED for every
+	// packet, which makes the established/related accept rule never match
+	// and throttles all return traffic for outbound connections to 200 pps.
+	//
+	// Must run BEFORE the mark chain (mangle = -150) so dropped traffic
+	// never gets forwarded into the game-traffic path.
+	priority := nftables.ChainPriority(-175)
 	m.chain = nft.AddChain(&nftables.Chain{
 		Name:     ChainName,
 		Table:    table,
