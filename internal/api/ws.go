@@ -112,6 +112,16 @@ func (h *WSHandler) handleAgentMessage(agentID string, raw []byte) {
 			slog.Warn("ws: bad container.state_update", "agent_id", agentID, "error", err)
 			return
 		}
+		// Trust boundary: reject messages claiming to be from a different agent.
+		// Force-set AgentID to the authenticated connection identity so that
+		// downstream code always sees the verified value, even when the payload
+		// field was empty.
+		if msg.AgentID != "" && msg.AgentID != agentID {
+			slog.Warn("ws: rejected cross-agent state_update",
+				"conn_agent", agentID, "msg_agent", msg.AgentID, "server_uuid", msg.ServerUUID)
+			return
+		}
+		msg.AgentID = agentID
 		h.onContainerStateUpdate(msg)
 	case "container.snapshot":
 		if h.onContainerSnapshot == nil {
@@ -122,6 +132,17 @@ func (h *WSHandler) handleAgentMessage(agentID string, raw []byte) {
 			slog.Warn("ws: bad container.snapshot", "agent_id", agentID, "error", err)
 			return
 		}
+		// Trust boundary: same check as container.state_update.
+		// Note: individual ContainerSnapshotItems carry only ServerUUID (not AgentID),
+		// so per-item ownership verification would require a tunnel ownership lookup
+		// via tunnel.Manager — that is out of scope here and documented as a residual
+		// trust assumption; the AgentID check on the outer envelope is the primary defence.
+		if msg.AgentID != "" && msg.AgentID != agentID {
+			slog.Warn("ws: rejected cross-agent snapshot",
+				"conn_agent", agentID, "msg_agent", msg.AgentID)
+			return
+		}
+		msg.AgentID = agentID
 		h.onContainerSnapshot(msg)
 	default:
 		// Unknown message types are ignored (forward-compat for newer agents).

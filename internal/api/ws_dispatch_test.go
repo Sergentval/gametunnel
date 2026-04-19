@@ -191,6 +191,44 @@ func TestWS_UnknownMessageTypeIgnored(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
+// TestWS_RejectsCrossAgentStateUpdate verifies that a container.state_update
+// whose AgentID field does not match the connection-authenticated agent ID is
+// silently dropped — the callback must NOT fire (Issue 2).
+//
+// Residual trust assumption documented here: the individual ContainerSnapshotItem
+// entries in a container.snapshot carry only ServerUUID, not AgentID, so
+// verifying that each ServerUUID belongs to a tunnel owned by this agent would
+// require a tunnel ownership lookup through tunnel.Manager. That per-item check
+// is out of scope; the AgentID check on the outer envelope is the primary defence.
+func TestWS_RejectsCrossAgentStateUpdate(t *testing.T) {
+	var callbackFired atomic.Int32
+
+	// Authenticated as "test-agent"; payload claims it comes from "a-bob".
+	env := setupTestAPIWithCallbacks(t, func(msg models.ContainerStateUpdate) {
+		callbackFired.Add(1)
+	}, nil)
+
+	conn := dialAgentWS(t, env)
+	defer conn.Close()
+
+	msg := models.ContainerStateUpdate{
+		Type:       "container.state_update",
+		AgentID:    "a-bob", // mismatch — connection is "test-agent"
+		ServerUUID: "uuid-1",
+		State:      "running",
+		Timestamp:  time.Now(),
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+
+	// Give the server time to process.
+	time.Sleep(150 * time.Millisecond)
+	if n := callbackFired.Load(); n != 0 {
+		t.Errorf("cross-agent state_update should have been rejected, callback fired %d time(s)", n)
+	}
+}
+
 // TestWS_NilCallbackNoopOnStateUpdate verifies that a nil OnContainerStateUpdate
 // callback is safely handled (no panic) when the message arrives.
 func TestWS_NilCallbackNoopOnStateUpdate(t *testing.T) {
