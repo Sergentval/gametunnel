@@ -160,7 +160,7 @@ func TestController_HeartbeatLoop(t *testing.T) {
 func TestController_SetSnapshotFunc(t *testing.T) {
 	ctrl := newTestController("http://unused", &mockWireGuard{}, &mockRouting{})
 
-	if ctrl.snapshotFn != nil {
+	if ctrl.snapshotFn.Load() != nil {
 		t.Fatal("snapshotFn should be nil before SetSnapshotFunc")
 	}
 
@@ -170,12 +170,13 @@ func TestController_SetSnapshotFunc(t *testing.T) {
 		return models.ContainerSnapshot{Type: "container.snapshot"}, nil
 	})
 
-	if ctrl.snapshotFn == nil {
+	fnPtr := ctrl.snapshotFn.Load()
+	if fnPtr == nil {
 		t.Fatal("snapshotFn should be non-nil after SetSnapshotFunc")
 	}
 
 	// Invoke the stored function to confirm it is the one we set.
-	snap, err := ctrl.snapshotFn(context.Background())
+	snap, err := (*fnPtr)(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error from snapshotFn: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestController_SetSnapshotFunc(t *testing.T) {
 
 	// Clearing with nil should work without panic.
 	ctrl.SetSnapshotFunc(nil)
-	if ctrl.snapshotFn != nil {
+	if ctrl.snapshotFn.Load() != nil {
 		t.Error("snapshotFn should be nil after SetSnapshotFunc(nil)")
 	}
 }

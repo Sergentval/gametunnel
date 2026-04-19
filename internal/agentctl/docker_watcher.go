@@ -70,7 +70,12 @@ func (w *DockerWatcher) Run(ctx context.Context) error {
 		case err := <-errs:
 			slog.Warn("docker events stream error", "error", err)
 			return err
-		case m := <-msgs:
+		case m, ok := <-msgs:
+			if !ok {
+				// Docker daemon closed the events channel (e.g. daemon restart).
+				// Return an error so the caller can restart the watcher.
+				return fmt.Errorf("docker events channel closed")
+			}
 			name := ""
 			if m.Actor.Attributes != nil {
 				name = m.Actor.Attributes["name"]

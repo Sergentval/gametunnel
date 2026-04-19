@@ -115,3 +115,50 @@ func TestTrackWithState_DuplicateReturnsError(t *testing.T) {
 		t.Error("expected duplicate TrackWithState to return error")
 	}
 }
+
+// TestTrack_PortChangeRemovesOldNFTEntry verifies that calling Track with a
+// different port for an already-tracked running uuid removes the old port from
+// the nft set and adds the new one — preventing a ghost rule on the old port
+// (Issue C).
+func TestTrack_PortChangeRemovesOldNFTEntry(t *testing.T) {
+	fc := newFakeClock()
+	p := &fakePort{}
+	m := gatestate.NewManager(fc, p, 120*time.Second)
+
+	// Track and bring to GateRunning state.
+	m.Track("u1", 7777)
+	m.OnStateUpdate("u1", models.GateRunning, time.Now())
+	if len(p.added) != 1 || p.added[0] != 7777 {
+		t.Fatalf("expected port 7777 added: %v", p.added)
+	}
+
+	// Re-track with a new port — should swap nft entries atomically.
+	m.Track("u1", 8888)
+	if len(p.removed) != 1 || p.removed[0] != 7777 {
+		t.Errorf("expected old port 7777 removed: %v", p.removed)
+	}
+	if len(p.added) != 2 || p.added[1] != 8888 {
+		t.Errorf("expected new port 8888 added: %v", p.added)
+	}
+}
+
+// TestTrack_PortChangeSamePortNoOp verifies that calling Track with the same
+// port for an existing uuid is a no-op (no spurious remove/add).
+func TestTrack_PortChangeSamePortNoOp(t *testing.T) {
+	fc := newFakeClock()
+	p := &fakePort{}
+	m := gatestate.NewManager(fc, p, 120*time.Second)
+
+	m.Track("u1", 7777)
+	m.OnStateUpdate("u1", models.GateRunning, time.Now())
+	initialAdded := len(p.added)
+
+	// Re-track with the same port — should be a no-op.
+	m.Track("u1", 7777)
+	if len(p.added) != initialAdded {
+		t.Errorf("same-port Track should not add: added %v", p.added)
+	}
+	if len(p.removed) != 0 {
+		t.Errorf("same-port Track should not remove: removed %v", p.removed)
+	}
+}

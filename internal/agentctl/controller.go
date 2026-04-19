@@ -53,7 +53,10 @@ type Controller struct {
 	// snapshotFn, if set, is invoked on WS connect and on agent.request_snapshot
 	// to produce a ContainerSnapshot sent to the server. Nil is valid — no
 	// snapshot is sent if not configured.
-	snapshotFn func(ctx context.Context) (models.ContainerSnapshot, error)
+	// Written by SetSnapshotFunc and read by sendSnapshot/handleWSEvent without
+	// holding a mutex; use atomic.Pointer to eliminate the data race (same pattern
+	// as wsSend).
+	snapshotFn atomic.Pointer[func(ctx context.Context) (models.ContainerSnapshot, error)]
 
 	// wsSend holds a pointer to the active WebSocket send function.
 	// Written on the WS event-loop goroutine and read on DockerWatcher
@@ -104,9 +107,13 @@ func NewController(
 
 // SetSnapshotFunc installs a function used to produce ContainerSnapshots on WS
 // connect and on-demand resync. Intended for agentctl.DockerWatcher.Snapshot.
-// Pass nil to disable snapshots.
+// Pass nil to disable snapshots. Safe to call concurrently.
 func (c *Controller) SetSnapshotFunc(fn func(ctx context.Context) (models.ContainerSnapshot, error)) {
-	c.snapshotFn = fn
+	if fn == nil {
+		c.snapshotFn.Store(nil)
+	} else {
+		c.snapshotFn.Store(&fn)
+	}
 }
 
 // Register calls the server's register endpoint, stores the assigned IP,
@@ -370,13 +377,14 @@ func (c *Controller) SendStateUpdate(msg models.ContainerStateUpdate) error {
 // snapshotFn is nil, wsSend is nil, or the snapshot call errors — errors are
 // logged as warnings and do not propagate; a missing snapshot is non-fatal.
 func (c *Controller) sendSnapshot() {
+	fnPtr := c.snapshotFn.Load()
 	sendPtr := c.wsSend.Load()
-	if c.snapshotFn == nil || sendPtr == nil {
+	if fnPtr == nil || sendPtr == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	snap, err := c.snapshotFn(ctx)
+	snap, err := (*fnPtr)(ctx)
 	if err != nil {
 		slog.Warn("container snapshot failed", "error", err)
 		return
