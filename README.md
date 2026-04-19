@@ -203,7 +203,7 @@ Gate state is persisted in `state.json` and survives server restarts. A tunnel l
 
 #### Observability
 
-- `GET /tunnels` responses include `gate_state` (`unknown` / `running` / `stopped` / `suspended`), `last_signal` (timestamp of the last agent state update), and `stale` (true when the owning agent's WS is disconnected).
+- `GET /tunnels` responses include `gate_state` (`unknown` / `running` / `stopped` / `suspended`) and `last_signal` (timestamp of the last agent state update). A `stale` field is reserved on the model for a future release that will flag tunnels whose owning agent's WS has disconnected; it is not populated today.
 - `POST /tunnels/{id}/resync` asks the owning agent to push a fresh `ContainerSnapshot` — useful when you suspect state has drifted.
 
 #### Configuration
