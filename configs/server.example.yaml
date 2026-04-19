@@ -76,3 +76,5 @@ pelican:
   port_protocols:
     25565: "tcp"   # Minecraft Java
     19132: "udp"   # Minecraft Bedrock
+  # Gate tunnel nft-set membership on container running state (see README).
+  # container_gated_tunnels: false
