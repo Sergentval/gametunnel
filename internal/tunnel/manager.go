@@ -189,6 +189,10 @@ func (m *Manager) SetGatedMode(on bool) {
 // SetGateState updates the stored GateState on a tunnel and applies the
 // corresponding nft change. Called by gatestate.Manager; not intended for
 // direct use by other callers.
+//
+// Fires OnTunnelChange("tunnel_gate_changed") after the lock is released
+// (same pattern as Create/Delete) so that the server runtime can persist
+// the updated gate state and push it to connected WebSocket clients.
 func (m *Manager) SetGateState(tunnelID string, state models.GateState) error {
 	m.mu.Lock()
 	t, ok := m.tunnels[tunnelID]
@@ -202,10 +206,15 @@ func (m *Manager) SetGateState(tunnelID string, state models.GateState) error {
 	m.tunnels[tunnelID] = t
 	port := t.PublicPort
 	protocol := string(t.Protocol)
+	snapshot := t // copy for callback
+	cb := m.OnTunnelChange
 	m.mu.Unlock()
 
 	if prev == state {
 		return nil
+	}
+	if cb != nil {
+		cb("tunnel_gate_changed", snapshot)
 	}
 	switch state {
 	case models.GateRunning:

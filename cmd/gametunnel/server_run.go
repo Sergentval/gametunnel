@@ -185,7 +185,14 @@ func serverRun(args []string) {
 	}
 
 	// Wire tunnel change events to the WebSocket hub.
+	// Gate-state changes are also persisted here so that runtime transitions
+	// (GateRunning ↔ GateStopped/GateSuspended) survive a server restart.
 	tunnelMgr.OnTunnelChange = func(event string, t models.Tunnel) {
+		if event == "tunnel_gate_changed" {
+			if err := store.SetTunnel(&t); err != nil {
+				slog.Warn("persist tunnel gate state", "tunnel_id", t.ID, "error", err)
+			}
+		}
 		wsEvent := models.WSEvent{Type: event, Tunnel: &t}
 		if err := wsHub.Send(t.AgentID, wsEvent); err != nil {
 			slog.Debug("ws push tunnel event", "event", event, "agent_id", t.AgentID, "error", err)
@@ -248,7 +255,13 @@ func serverRun(args []string) {
 		if t.Status != models.TunnelStatusActive {
 			continue
 		}
-
+		// In gated mode, nft membership is governed by GateState — TrackWithState
+		// already restored running tunnels above. Skip AddRule for tunnels that
+		// are not currently in GateRunning so a stopped/suspended tunnel at
+		// shutdown does not have its port silently re-opened at startup.
+		if gatestateMgr != nil && t.GateState != models.GateRunning {
+			continue
+		}
 		// Re-create MARK rule
 		if err := tproxyMgr.AddRule(string(t.Protocol), t.PublicPort, cfg.TProxy.Mark); err != nil {
 			slog.Warn("re-create MARK rule", "port", t.PublicPort, "error", err)
