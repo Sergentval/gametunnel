@@ -211,10 +211,11 @@ func TestController_sendSnapshot_NoOp(t *testing.T) {
 	ctrl.SetSnapshotFunc(nil)
 
 	// wsSend set, but snapshotFn nil — no-op.
-	ctrl.wsSend = func(payload []byte) error {
+	noopFn := func(payload []byte) error {
 		t.Error("wsSend should not be called when snapshotFn is nil")
 		return nil
 	}
+	ctrl.wsSend.Store(&noopFn)
 	ctrl.sendSnapshot()
 }
 
@@ -236,10 +237,11 @@ func TestController_sendSnapshot_Sends(t *testing.T) {
 	})
 
 	var received []byte
-	ctrl.wsSend = func(payload []byte) error {
+	sendFn := func(payload []byte) error {
 		received = payload
 		return nil
 	}
+	ctrl.wsSend.Store(&sendFn)
 
 	ctrl.sendSnapshot()
 
@@ -267,10 +269,11 @@ func TestController_sendSnapshot_SnapshotError(t *testing.T) {
 	ctrl.SetSnapshotFunc(func(ctx context.Context) (models.ContainerSnapshot, error) {
 		return models.ContainerSnapshot{}, errors.New("docker unavailable")
 	})
-	ctrl.wsSend = func(payload []byte) error {
+	noopFn := func(payload []byte) error {
 		t.Error("wsSend should not be called when snapshotFn errors")
 		return nil
 	}
+	ctrl.wsSend.Store(&noopFn)
 
 	ctrl.sendSnapshot() // must not panic; error is logged only
 }
@@ -284,10 +287,11 @@ func TestController_handleWSEvent_RequestSnapshot(t *testing.T) {
 	ctrl.SetSnapshotFunc(func(ctx context.Context) (models.ContainerSnapshot, error) {
 		return models.ContainerSnapshot{Type: "container.snapshot", AgentID: ctrl.agentID}, nil
 	})
-	ctrl.wsSend = func(payload []byte) error {
+	sendFn := func(payload []byte) error {
 		sent.Add(1)
 		return nil
 	}
+	ctrl.wsSend.Store(&sendFn)
 
 	ctrl.handleWSEvent(models.WSEvent{Type: "agent.request_snapshot"})
 
@@ -309,7 +313,8 @@ func TestController_SendStateUpdate_NoActiveWS(t *testing.T) {
 func TestController_SendStateUpdate_Success(t *testing.T) {
 	var gotPayload []byte
 	c := &Controller{}
-	c.wsSend = func(p []byte) error { gotPayload = p; return nil }
+	sendFn := func(p []byte) error { gotPayload = p; return nil }
+	c.wsSend.Store(&sendFn)
 	err := c.SendStateUpdate(models.ContainerStateUpdate{
 		Type: "container.state_update", AgentID: "a", ServerUUID: "u1", State: "running",
 	})
@@ -322,4 +327,28 @@ func TestController_SendStateUpdate_Success(t *testing.T) {
 	if !bytes.Contains(gotPayload, []byte(`"state":"running"`)) {
 		t.Errorf("payload missing state: %s", gotPayload)
 	}
+}
+
+// TestController_WsSend_NoRaceOnConcurrentAccess verifies that concurrent
+// Store (writer) and SendStateUpdate (reader) calls on wsSend do not race.
+// Run with -race; the test must not panic or report a data race.
+func TestController_WsSend_NoRaceOnConcurrentAccess(t *testing.T) {
+	c := &Controller{}
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			sendFn := func(p []byte) error { return nil }
+			c.wsSend.Store(&sendFn)
+			c.wsSend.Store(nil)
+		}
+		close(done)
+	}()
+
+	for i := 0; i < 1000; i++ {
+		_ = c.SendStateUpdate(models.ContainerStateUpdate{
+			Type: "container.state_update", AgentID: "a", ServerUUID: "u", State: "running",
+		})
+	}
+	<-done
 }

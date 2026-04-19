@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
@@ -54,11 +55,11 @@ type Controller struct {
 	// snapshot is sent if not configured.
 	snapshotFn func(ctx context.Context) (models.ContainerSnapshot, error)
 
-	// wsSend, set while a websocket is active, sends a raw message to the server.
-	// Synchronised inside the closure. Nil outside of an active WS session.
-	// Safe to read from handleWSEvent: both the set and the event loop run on the
-	// same goroutine inside runWebSocket; the defer-nil only fires after the loop exits.
-	wsSend func(payload []byte) error
+	// wsSend holds a pointer to the active WebSocket send function.
+	// Written on the WS event-loop goroutine and read on DockerWatcher
+	// goroutines; protected with atomic.Pointer to eliminate the data race.
+	// Nil pointer outside of an active WS session.
+	wsSend atomic.Pointer[func([]byte) error]
 }
 
 // NewController creates a Controller with the supplied dependencies.
@@ -213,10 +214,11 @@ func (c *Controller) runWebSocket() error {
 	slog.Info("websocket connected")
 
 	// Expose a JSON-send closure to handleWSEvent for on-demand snapshots.
-	c.wsSend = func(payload []byte) error {
+	sendFn := func(payload []byte) error {
 		return writeMessage(websocket.TextMessage, payload)
 	}
-	defer func() { c.wsSend = nil }()
+	c.wsSend.Store(&sendFn)
+	defer c.wsSend.Store(nil)
 
 	// Start pinger goroutine (replaces HTTP heartbeat).
 	pingDone := make(chan struct{})
@@ -350,25 +352,26 @@ func (c *Controller) handleTunnelDeleted(t models.Tunnel) {
 
 // SendStateUpdate pushes a ContainerStateUpdate over the agent's WS to the
 // server. Returns an error if no WS is currently connected. Safe to call
-// concurrently — writes are serialised by the WS writer mutex established
-// in runWebSocket.
+// concurrently — the atomic load is race-free, and writes are serialised by
+// the WS writer mutex established in runWebSocket.
 func (c *Controller) SendStateUpdate(msg models.ContainerStateUpdate) error {
-	send := c.wsSend
-	if send == nil {
+	sendPtr := c.wsSend.Load()
+	if sendPtr == nil {
 		return fmt.Errorf("no active websocket connection")
 	}
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal state update: %w", err)
 	}
-	return send(payload)
+	return (*sendPtr)(payload)
 }
 
 // sendSnapshot writes a ContainerSnapshot message via wsSend. No-op if
 // snapshotFn is nil, wsSend is nil, or the snapshot call errors — errors are
 // logged as warnings and do not propagate; a missing snapshot is non-fatal.
 func (c *Controller) sendSnapshot() {
-	if c.snapshotFn == nil || c.wsSend == nil {
+	sendPtr := c.wsSend.Load()
+	if c.snapshotFn == nil || sendPtr == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -383,7 +386,7 @@ func (c *Controller) sendSnapshot() {
 		slog.Warn("marshal container snapshot", "error", err)
 		return
 	}
-	if err := c.wsSend(payload); err != nil {
+	if err := (*sendPtr)(payload); err != nil {
 		slog.Warn("send container snapshot", "error", err)
 	}
 }
