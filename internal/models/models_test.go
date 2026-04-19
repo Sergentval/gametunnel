@@ -1,7 +1,9 @@
 package models
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestSanitizeGREName(t *testing.T) {
@@ -72,5 +74,54 @@ func TestSanitizeGRENameNeverExceeds15(t *testing.T) {
 		if len(got) > 15 {
 			t.Errorf("SanitizeGREName(%q) = %q exceeds 15 chars (len=%d)", input, got, len(got))
 		}
+	}
+}
+
+func TestGateStateConstants(t *testing.T) {
+	cases := []struct {
+		s    GateState
+		want string
+	}{
+		{GateUnknown, "unknown"},
+		{GateRunning, "running"},
+		{GateStopped, "stopped"},
+		{GateSuspended, "suspended"},
+	}
+	for _, c := range cases {
+		if string(c.s) != c.want {
+			t.Errorf("%v: got %q, want %q", c.s, string(c.s), c.want)
+		}
+	}
+}
+
+func TestTunnelGateStateRoundtrip(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	orig := Tunnel{
+		ID:         "abc",
+		Name:       "n",
+		Protocol:   ProtocolUDP,
+		PublicPort: 7777,
+		LocalPort:  7777,
+		AgentID:    "a",
+		Source:     TunnelSourceManual,
+		Status:     TunnelStatusActive,
+		CreatedAt:  now,
+		GateState:  GateRunning,
+		LastSignal: now,
+		StaleFlag:  false,
+	}
+	b, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Tunnel
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GateState != orig.GateState {
+		t.Errorf("GateState: got %q, want %q", got.GateState, orig.GateState)
+	}
+	if !got.LastSignal.Equal(orig.LastSignal) {
+		t.Errorf("LastSignal mismatch")
 	}
 }

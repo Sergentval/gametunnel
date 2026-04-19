@@ -31,6 +31,17 @@ const (
 	TunnelStatusInactive TunnelStatus = "inactive"
 )
 
+// GateState gates a tunnel's nft-set membership on the backing container's running state.
+// Orthogonal to TunnelStatus, which describes plumbing health (GRE, rules, peer).
+type GateState string
+
+const (
+	GateUnknown   GateState = "unknown"
+	GateRunning   GateState = "running"
+	GateStopped   GateState = "stopped"
+	GateSuspended GateState = "suspended"
+)
+
 // AgentStatus represents the connectivity state of an agent.
 type AgentStatus string
 
@@ -64,6 +75,9 @@ type Tunnel struct {
 	ContainerIP         string       `json:"container_ip,omitempty"`
 	Status              TunnelStatus `json:"status"`
 	CreatedAt           time.Time    `json:"created_at"`
+	GateState           GateState    `json:"gate_state"`
+	LastSignal          time.Time    `json:"last_signal"`
+	StaleFlag           bool         `json:"stale,omitempty"`
 }
 
 // GREConfig holds the parameters needed to create a GRE tunnel interface.
