@@ -47,6 +47,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		registry:  deps.Registry,
 		store:     deps.Store,
 		config:    deps.Config,
+		hub:       deps.WSHub,
 	}
 
 	wsH := &WSHandler{
@@ -69,6 +70,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /tunnels", auth(http.HandlerFunc(tunnelH.List)))
 	mux.Handle("GET /tunnels/{id}", auth(http.HandlerFunc(tunnelH.Get)))
 	mux.Handle("DELETE /tunnels/{id}", auth(http.HandlerFunc(tunnelH.Delete)))
+	mux.Handle("POST /tunnels/{id}/resync", auth(http.HandlerFunc(tunnelH.Resync)))
 
 	// Health check — no auth required.
 	startTime := time.Now()
