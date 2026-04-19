@@ -2,6 +2,7 @@ package gatestate
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -48,14 +49,34 @@ func NewManager(clock Clock, port PortController, debounceDelay time.Duration) *
 // Track begins managing the (uuid, port) tunnel. Initial state is GateUnknown.
 // Safe to call multiple times for the same uuid — subsequent calls update the
 // port (if changed) but preserve current state and debounce timer.
+//
+// If the port changes for an existing uuid, the old nft entry is removed and
+// the new one added (when the tunnel is currently in GateRunning), preventing
+// the old port from remaining open as a ghost rule (Issue C).
 func (m *Manager) Track(uuid string, port int) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if t, ok := m.tracked[uuid]; ok {
+		if t.port == port {
+			m.mu.Unlock()
+			return
+		}
+		// Port changed for an existing uuid — migrate nft membership atomically.
+		oldPort := t.port
+		wasRunning := t.state == models.GateRunning
 		t.port = port
+		m.mu.Unlock()
+		if wasRunning {
+			if err := m.port.RemovePort(oldPort); err != nil {
+				slog.Error("gatestate: remove old port on Track retarget", "uuid", uuid, "port", oldPort, "error", err)
+			}
+			if err := m.port.AddPort(port); err != nil {
+				slog.Error("gatestate: add new port on Track retarget", "uuid", uuid, "port", port, "error", err)
+			}
+		}
 		return
 	}
 	m.tracked[uuid] = &trackedTunnel{uuid: uuid, port: port, state: models.GateUnknown}
+	m.mu.Unlock()
 }
 
 // TrackWithState is like Track but initializes the state — used by state.json
@@ -90,7 +111,9 @@ func (m *Manager) Untrack(uuid string) {
 	m.debouncer.Cancel(uuid)
 	m.mu.Unlock()
 	if wasRunning {
-		_ = m.port.RemovePort(port)
+		if err := m.port.RemovePort(port); err != nil {
+			slog.Error("gatestate: remove port on untrack failed", "uuid", uuid, "port", port, "error", err)
+		}
 	}
 }
 
@@ -136,10 +159,14 @@ func (m *Manager) apply(uuid string, e Event, ts time.Time) {
 
 	switch effect {
 	case EffectAddPort:
-		_ = m.port.AddPort(port)
+		if err := m.port.AddPort(port); err != nil {
+			slog.Error("gatestate: add port failed", "uuid", uuid, "port", port, "error", err)
+		}
 		m.debouncer.Cancel(uuid) // a prior stop-debounce, if any, is moot
 	case EffectRemovePort:
-		_ = m.port.RemovePort(port)
+		if err := m.port.RemovePort(port); err != nil {
+			slog.Error("gatestate: remove port failed", "uuid", uuid, "port", port, "error", err)
+		}
 		m.debouncer.Cancel(uuid)
 	case EffectArmDebounce:
 		m.debouncer.Arm(uuid, func() {
