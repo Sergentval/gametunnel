@@ -93,3 +93,44 @@ func TestDebouncer_ReArmReplaces(t *testing.T) {
 		t.Fatalf("want second=1 only: first=%d second=%d", first, second)
 	}
 }
+
+// TestDebouncer_ReArmDoesNotClobberNewEntryOnStaleFire is a regression test for
+// the debouncer re-arm race: a stale fire-closure must not delete the map entry
+// that belongs to a freshly-armed timer (Issue 1).
+//
+// With the fakeClock used here, Advance() runs timer functions synchronously
+// within the call. The race is reproduced by:
+//  1. Arm A with a 120s delay.
+//  2. Advance 119s (A not yet fired).
+//  3. Arm B (cancels A, new 120s timer).
+//  4. Advance 2s — A *would* have fired at t=120s but was cancelled; B has not yet
+//     fired (B fires at t=119+120=239s).
+//  5. Assert Pending("k") is still true (B's entry was not clobbered).
+//  6. Advance enough to fire B and verify it fires exactly once.
+func TestDebouncer_ReArmDoesNotClobberNewEntryOnStaleFire(t *testing.T) {
+	fc := newFakeClock()
+	d := gatestate.NewDebouncer(fc, 120*time.Second)
+	firesA, firesB := 0, 0
+
+	d.Arm("k", func() { firesA++ })
+	// Advance close to but not past A's deadline.
+	fc.Advance(119 * time.Second)
+	// Re-arm — cancels A, starts B from now.
+	d.Arm("k", func() { firesB++ })
+	// Advance 2s: A would have fired (t=121s) if not cancelled; B hasn't fired yet.
+	fc.Advance(2 * time.Second)
+	if firesA != 0 {
+		t.Fatalf("A should have been cancelled, fired %d time(s)", firesA)
+	}
+	if !d.Pending("k") {
+		t.Fatalf("Pending should be true — B's map entry must not have been clobbered by a stale A closure")
+	}
+	// Advance so B fires (total from B-arm = 120s).
+	fc.Advance(118 * time.Second)
+	if firesB != 1 {
+		t.Fatalf("B should have fired exactly once: %d", firesB)
+	}
+	if d.Pending("k") {
+		t.Fatalf("Pending should be false after B fires")
+	}
+}
