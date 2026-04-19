@@ -39,6 +39,7 @@ type Manager struct {
 	wgInterface string
 	tunnels     map[string]models.Tunnel
 	portUsed    map[int]string // port → tunnel ID
+	gatedMode   bool          // when true, Create does not add the port to nft — gatestate owns that
 
 	// OnTunnelChange is an optional callback invoked after a tunnel is created
 	// or deleted. The event string is "tunnel_created" or "tunnel_deleted".
@@ -71,6 +72,9 @@ func NewManager(tp tproxy.Manager, rt routing.Manager, mark string, table int, l
 func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	m.mu.Lock()
 
+	// Capture gated mode flag while holding the lock.
+	gated := m.gatedMode
+
 	// Port uniqueness check.
 	if existing, used := m.portUsed[req.PublicPort]; used {
 		m.mu.Unlock()
@@ -85,10 +89,13 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	}
 	id := hex.EncodeToString(idBytes)
 
-	// Add the MARK rule.
-	if err := m.tproxy.AddRule(string(req.Protocol), req.PublicPort, m.mark); err != nil {
-		m.mu.Unlock()
-		return models.Tunnel{}, fmt.Errorf("add mark rule for port %d: %w", req.PublicPort, err)
+	// Add the MARK rule only in legacy (non-gated) mode.
+	// In gated mode, gatestate.Manager owns the add/remove decision.
+	if !gated {
+		if err := m.tproxy.AddRule(string(req.Protocol), req.PublicPort, m.mark); err != nil {
+			m.mu.Unlock()
+			return models.Tunnel{}, fmt.Errorf("add mark rule for port %d: %w", req.PublicPort, err)
+		}
 	}
 
 	// Set up forward route so marked packets route through the WireGuard interface.
@@ -99,6 +106,14 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	// Add FORWARD accept rules for traffic between public interface and WireGuard.
 	if err := routing.EnsureForwardRules(m.wgInterface, m.nftFwd); err != nil {
 		_ = err // non-fatal: forwarding may still work if policy is ACCEPT
+	}
+
+	// Determine initial GateState based on mode:
+	//   legacy mode → GateRunning (port is already in nft, always on)
+	//   gated mode  → GateUnknown (gatestate.Manager will decide)
+	initialGateState := models.GateRunning
+	if gated {
+		initialGateState = models.GateUnknown
 	}
 
 	t := models.Tunnel{
@@ -113,6 +128,7 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 		PelicanAllocationID: req.PelicanAllocationID,
 		PelicanServerID:     req.PelicanServerID,
 		Status:              models.TunnelStatusActive,
+		GateState:           initialGateState,
 		CreatedAt:           time.Now(),
 	}
 
@@ -157,6 +173,54 @@ func (m *Manager) Delete(id string) error {
 		cb("tunnel_deleted", t)
 	}
 	return nil
+}
+
+// SetGatedMode toggles whether Create() adds the port to nft. When true,
+// the tunnel is registered in GateUnknown and gatestate.Manager owns all
+// port add/remove. When false (default), legacy behavior: Create adds port.
+func (m *Manager) SetGatedMode(on bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gatedMode = on
+}
+
+// SetGateState updates the stored GateState on a tunnel and applies the
+// corresponding nft change. Called by gatestate.Manager; not intended for
+// direct use by other callers.
+func (m *Manager) SetGateState(tunnelID string, state models.GateState) error {
+	m.mu.Lock()
+	t, ok := m.tunnels[tunnelID]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("tunnel %q not found", tunnelID)
+	}
+	prev := t.GateState
+	t.GateState = state
+	t.LastSignal = time.Now()
+	m.tunnels[tunnelID] = t
+	port := t.PublicPort
+	protocol := string(t.Protocol)
+	m.mu.Unlock()
+
+	if prev == state {
+		return nil
+	}
+	switch state {
+	case models.GateRunning:
+		return m.tproxy.AddRule(protocol, port, m.mark)
+	case models.GateStopped, models.GateSuspended:
+		return m.tproxy.RemoveRule(protocol, port, m.mark)
+	}
+	return nil
+}
+
+// TunnelIDByPort returns the tunnel ID that currently owns the given public
+// port, if any. Used by the gatestate port adapter.
+func (m *Manager) TunnelIDByPort(port int) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.portUsed[port]
+	return id, ok
 }
 
 // Get returns a tunnel by ID.

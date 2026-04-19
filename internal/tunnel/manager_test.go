@@ -62,6 +62,31 @@ func defaultReq(name string, port int, agentID string) CreateRequest {
 	}
 }
 
+// fakeTproxy records Add/Remove calls for assertion in gated-mode tests.
+type fakeTproxy struct {
+	added   []string
+	removed []string
+}
+
+func (f *fakeTproxy) AddRule(proto string, port int, mark string) error {
+	f.added = append(f.added, fmt.Sprintf("%s:%d", proto, port))
+	return nil
+}
+func (f *fakeTproxy) RemoveRule(proto string, port int, mark string) error {
+	f.removed = append(f.removed, fmt.Sprintf("%s:%d", proto, port))
+	return nil
+}
+func (f *fakeTproxy) EnsurePolicyRouting(string, int) error  { return nil }
+func (f *fakeTproxy) CleanupPolicyRouting(string, int) error { return nil }
+
+// fakeRouting is a no-op routing.Manager for gated-mode tests.
+type fakeRouting struct{}
+
+func (f *fakeRouting) AddReturnRoute(table int, gateway net.IP, device string) error { return nil }
+func (f *fakeRouting) RemoveReturnRoute(table int) error                             { return nil }
+func (f *fakeRouting) AddSourceRule(table int, srcNet *net.IPNet) error               { return nil }
+func (f *fakeRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error            { return nil }
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 func TestManager_CreateTunnel(t *testing.T) {
@@ -193,5 +218,62 @@ func TestManager_DeleteByAgent(t *testing.T) {
 	// agentY tunnel still present.
 	if len(mgr.ListByAgent("agentY")) != 1 {
 		t.Error("agentY tunnel should survive DeleteByAgent(agentX)")
+	}
+}
+
+func TestCreate_GatedMode_DoesNotAddPort(t *testing.T) {
+	tp := &fakeTproxy{}
+	rt := &fakeRouting{}
+	m := NewManager(tp, rt, "0x1", 100, net.ParseIP("1.2.3.4"), "wg-gt", nil)
+	m.SetGatedMode(true)
+	_, err := m.Create(CreateRequest{
+		Name: "t1", Protocol: models.ProtocolUDP, PublicPort: 7777, LocalPort: 7777,
+		AgentID: "a", AgentIP: net.ParseIP("10.99.0.2"), Source: models.TunnelSourcePelican,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tp.added) != 0 {
+		t.Errorf("gated mode should not add port directly: %v", tp.added)
+	}
+}
+
+func TestCreate_LegacyMode_AddsPort(t *testing.T) {
+	tp := &fakeTproxy{}
+	rt := &fakeRouting{}
+	m := NewManager(tp, rt, "0x1", 100, net.ParseIP("1.2.3.4"), "wg-gt", nil)
+	// gated mode off (default) — legacy behavior
+	_, err := m.Create(CreateRequest{
+		Name: "t1", Protocol: models.ProtocolUDP, PublicPort: 7777, LocalPort: 7777,
+		AgentID: "a", AgentIP: net.ParseIP("10.99.0.2"), Source: models.TunnelSourceManual,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tp.added) != 1 {
+		t.Errorf("legacy mode should add port: %v", tp.added)
+	}
+}
+
+func TestSetGateState_AddRemovePort(t *testing.T) {
+	tp := &fakeTproxy{}
+	rt := &fakeRouting{}
+	m := NewManager(tp, rt, "0x1", 100, net.ParseIP("1.2.3.4"), "wg-gt", nil)
+	m.SetGatedMode(true)
+	tun, _ := m.Create(CreateRequest{
+		Name: "t1", Protocol: models.ProtocolUDP, PublicPort: 7777, LocalPort: 7777,
+		AgentID: "a", AgentIP: net.ParseIP("10.99.0.2"), Source: models.TunnelSourcePelican,
+	})
+	if err := m.SetGateState(tun.ID, models.GateRunning); err != nil {
+		t.Fatal(err)
+	}
+	if len(tp.added) != 1 {
+		t.Errorf("expected 1 add: %v", tp.added)
+	}
+	if err := m.SetGateState(tun.ID, models.GateStopped); err != nil {
+		t.Fatal(err)
+	}
+	if len(tp.removed) != 1 {
+		t.Errorf("expected 1 remove: %v", tp.removed)
 	}
 }
