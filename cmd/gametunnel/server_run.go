@@ -300,11 +300,12 @@ func serverRun(args []string) {
 		pelicanClient := pelican.NewPelicanClient(cfg.Pelican.PanelURL, cfg.Pelican.APIKey)
 
 		watcherCfg := pelican.WatcherConfig{
-			NodeID:         cfg.Pelican.NodeID,
-			DefaultAgentID: cfg.Pelican.DefaultAgentID,
-			AgentRegistry:  registry,
-			DefaultProto:   cfg.Pelican.DefaultProtocol,
-			PortProtocols:  cfg.Pelican.PortProtocols,
+			NodeID:           cfg.Pelican.NodeID,
+			DefaultAgentID:   cfg.Pelican.DefaultAgentID,
+			AgentRegistry:    registry,
+			DefaultProto:     cfg.Pelican.DefaultProtocol,
+			PortProtocols:    cfg.Pelican.PortProtocols,
+			GatestateTracker: gatestateMgr, // nil when ContainerGatedTunnels is off — watcher checks
 		}
 		watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr, store)
 

@@ -24,6 +24,7 @@ type CreateRequest struct {
 	Source              models.TunnelSource
 	PelicanAllocationID *int
 	PelicanServerID     *int
+	PelicanServerUUID   *string
 }
 
 // Manager orchestrates the lifecycle of tunnels and MARK rules.
@@ -127,6 +128,7 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 		Source:              req.Source,
 		PelicanAllocationID: req.PelicanAllocationID,
 		PelicanServerID:     req.PelicanServerID,
+		PelicanServerUUID:   req.PelicanServerUUID,
 		Status:              models.TunnelStatusActive,
 		GateState:           initialGateState,
 		CreatedAt:           time.Now(),

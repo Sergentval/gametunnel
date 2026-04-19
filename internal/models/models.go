@@ -72,6 +72,7 @@ type Tunnel struct {
 	Source              TunnelSource `json:"source"`
 	PelicanAllocationID *int         `json:"pelican_allocation_id,omitempty"`
 	PelicanServerID     *int         `json:"pelican_server_id,omitempty"`
+	PelicanServerUUID   *string      `json:"pelican_server_uuid,omitempty"`
 	ContainerIP         string       `json:"container_ip,omitempty"`
 	Status              TunnelStatus `json:"status"`
 	CreatedAt           time.Time    `json:"created_at"`

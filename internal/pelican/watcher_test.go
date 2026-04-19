@@ -187,6 +187,108 @@ func TestWatcher_Sync_RemoveOrphaned(t *testing.T) {
 	}
 }
 
+// ── fakeTracker ───────────────────────────────────────────────────────────────
+
+type fakeTracker struct {
+	tracked   []struct {
+		UUID string
+		Port int
+	}
+	untracked []string
+}
+
+func (f *fakeTracker) Track(uuid string, port int) {
+	f.tracked = append(f.tracked, struct {
+		UUID string
+		Port int
+	}{uuid, port})
+}
+
+func (f *fakeTracker) Untrack(uuid string) { f.untracked = append(f.untracked, uuid) }
+
+func TestSync_TracksAndUntracksInGatestate(t *testing.T) {
+	mgr, _ := newTestTunnelManager()
+	tracker := &fakeTracker{}
+
+	srv := Server{ID: 42, UUID: "server-uuid-1", Name: "mc-1", Node: 7, Allocation: 10}
+	api := &mockPelicanAPI{
+		allocations: []Allocation{
+			{ID: 10, IP: "1.2.3.4", Port: 7777, Assigned: true},
+		},
+		allocServerMap: map[int]Server{10: srv},
+	}
+
+	cfg := defaultWatcherConfig()
+	cfg.GatestateTracker = tracker
+
+	watcher := NewWatcher(cfg, api, mgr, newTestStore(t))
+
+	// First Sync: allocation is assigned → Track should be called.
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("first Sync: %v", err)
+	}
+
+	if len(tracker.tracked) != 1 {
+		t.Fatalf("expected 1 Track call, got %d", len(tracker.tracked))
+	}
+	if tracker.tracked[0].UUID != "server-uuid-1" {
+		t.Errorf("Track UUID: got %q, want %q", tracker.tracked[0].UUID, "server-uuid-1")
+	}
+	if tracker.tracked[0].Port != 7777 {
+		t.Errorf("Track Port: got %d, want %d", tracker.tracked[0].Port, 7777)
+	}
+
+	// Verify the tunnel stored the UUID.
+	tunnels := mgr.List()
+	if len(tunnels) != 1 {
+		t.Fatalf("expected 1 tunnel, got %d", len(tunnels))
+	}
+	if tunnels[0].PelicanServerUUID == nil || *tunnels[0].PelicanServerUUID != "server-uuid-1" {
+		t.Errorf("PelicanServerUUID: got %v, want %q", tunnels[0].PelicanServerUUID, "server-uuid-1")
+	}
+
+	// Second Sync: allocation unassigned → Untrack should be called.
+	api.allocations = []Allocation{
+		{ID: 10, IP: "1.2.3.4", Port: 7777, Assigned: false},
+	}
+	api.allocServerMap = map[int]Server{} // no server for this allocation
+
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("second Sync: %v", err)
+	}
+
+	if len(tracker.untracked) != 1 {
+		t.Fatalf("expected 1 Untrack call, got %d", len(tracker.untracked))
+	}
+	if tracker.untracked[0] != "server-uuid-1" {
+		t.Errorf("Untrack UUID: got %q, want %q", tracker.untracked[0], "server-uuid-1")
+	}
+}
+
+func TestSync_NoTrackerNoPanic(t *testing.T) {
+	// Ensure that Sync works correctly when GatestateTracker is nil (legacy mode).
+	mgr, _ := newTestTunnelManager()
+
+	srv := Server{ID: 55, UUID: "some-uuid", Name: "test-srv", Node: 7, Allocation: 20}
+	api := &mockPelicanAPI{
+		allocations: []Allocation{
+			{ID: 20, IP: "1.2.3.4", Port: 9999, Assigned: true},
+		},
+		allocServerMap: map[int]Server{20: srv},
+	}
+
+	cfg := defaultWatcherConfig()
+	// GatestateTracker deliberately left nil
+
+	watcher := NewWatcher(cfg, api, mgr, newTestStore(t))
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(mgr.List()) != 1 {
+		t.Errorf("expected 1 tunnel, got %d", len(mgr.List()))
+	}
+}
+
 func TestWatcher_ProtocolMapping(t *testing.T) {
 	// protocolFor with no overrides should return the default protocol.
 	mgr, _ := newTestTunnelManager()

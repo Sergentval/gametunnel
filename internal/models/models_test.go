@@ -96,19 +96,21 @@ func TestGateStateConstants(t *testing.T) {
 
 func TestTunnelGateStateRoundtrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
+	uuid := "5a71b99d-bd4a-4cd1-af69-285f5067687b"
 	orig := Tunnel{
-		ID:         "abc",
-		Name:       "n",
-		Protocol:   ProtocolUDP,
-		PublicPort: 7777,
-		LocalPort:  7777,
-		AgentID:    "a",
-		Source:     TunnelSourceManual,
-		Status:     TunnelStatusActive,
-		CreatedAt:  now,
-		GateState:  GateRunning,
-		LastSignal: now,
-		StaleFlag:  false,
+		ID:                "abc",
+		Name:              "n",
+		Protocol:          ProtocolUDP,
+		PublicPort:        7777,
+		LocalPort:         7777,
+		AgentID:           "a",
+		Source:            TunnelSourceManual,
+		PelicanServerUUID: &uuid,
+		Status:            TunnelStatusActive,
+		CreatedAt:         now,
+		GateState:         GateRunning,
+		LastSignal:        now,
+		StaleFlag:         false,
 	}
 	b, err := json.Marshal(orig)
 	if err != nil {
@@ -123,6 +125,9 @@ func TestTunnelGateStateRoundtrip(t *testing.T) {
 	}
 	if !got.LastSignal.Equal(orig.LastSignal) {
 		t.Errorf("LastSignal mismatch")
+	}
+	if got.PelicanServerUUID == nil || *got.PelicanServerUUID != uuid {
+		t.Errorf("PelicanServerUUID: got %v, want %q", got.PelicanServerUUID, uuid)
 	}
 }
 

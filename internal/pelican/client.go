@@ -19,11 +19,12 @@ type Allocation struct {
 
 // Server represents a game server from the Pelican Application API.
 type Server struct {
-	ID            int                  `json:"id"`
-	Name          string               `json:"name"`
-	Node          int                  `json:"node"`
-	Allocation    int                  `json:"allocation"`
-	Relationships serverRelationships  `json:"relationships"`
+	ID            int                 `json:"id"`
+	UUID          string              `json:"uuid"`
+	Name          string              `json:"name"`
+	Node          int                 `json:"node"`
+	Allocation    int                 `json:"allocation"`
+	Relationships serverRelationships `json:"relationships"`
 }
 
 type serverRelationships struct {
