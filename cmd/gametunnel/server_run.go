@@ -218,6 +218,28 @@ func serverRun(args []string) {
 	}
 	tunnelMgr.LoadFromState(restoredTunnels)
 
+	// ── Re-seed gatestate.Manager from restored tunnel state ────────────────
+	// When container-gated tunnels are enabled, gatestate.Manager starts empty
+	// on restart. Without seeding it here, early agent container.state_update
+	// messages are silently dropped (no tracked entry), and any subsequent
+	// Pelican watcher Track() call would start the machine at GateUnknown —
+	// whose GateUnknown+stopped transition is EffectNone, leaving a stale nft
+	// rule permanently open. Seeding with TrackWithState(GateRunning) ensures
+	// the nft set reflects reality from the first moment.
+	if gatestateMgr != nil {
+		for _, t := range restoredTunnels {
+			if t.Status != models.TunnelStatusActive {
+				continue
+			}
+			if t.PelicanServerUUID == nil {
+				continue
+			}
+			if err := gatestateMgr.TrackWithState(*t.PelicanServerUUID, t.PublicPort, t.GateState); err != nil {
+				slog.Warn("restore gatestate tracking", "uuid", *t.PelicanServerUUID, "port", t.PublicPort, "error", err)
+			}
+		}
+	}
+
 	// ── Re-create kernel resources for restored tunnels ─────────────────────
 	// After a restart, state.json has tunnel records but the kernel has no
 	// iptables rules. WireGuard is already up; just re-apply MARK rules and

@@ -62,12 +62,14 @@ func (m *Manager) Track(uuid string, port int) {
 // v2 migration (load as GateRunning).
 func (m *Manager) TrackWithState(uuid string, port int, state models.GateState) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, ok := m.tracked[uuid]; ok {
+		m.mu.Unlock()
 		return fmt.Errorf("uuid %q already tracked", uuid)
 	}
 	m.tracked[uuid] = &trackedTunnel{uuid: uuid, port: port, state: state}
-	if state == models.GateRunning {
+	shouldAdd := state == models.GateRunning
+	m.mu.Unlock()
+	if shouldAdd {
 		return m.port.AddPort(port)
 	}
 	return nil
