@@ -2,6 +2,7 @@ package agentctl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -47,6 +48,17 @@ type Controller struct {
 	connmarkRefCount    int // ref count for connmark-based reply routing
 	stopCh              chan struct{}
 	loopWg              sync.WaitGroup
+
+	// snapshotFn, if set, is invoked on WS connect and on agent.request_snapshot
+	// to produce a ContainerSnapshot sent to the server. Nil is valid — no
+	// snapshot is sent if not configured.
+	snapshotFn func(ctx context.Context) (models.ContainerSnapshot, error)
+
+	// wsSend, set while a websocket is active, sends a raw message to the server.
+	// Synchronised inside the closure. Nil outside of an active WS session.
+	// Safe to read from handleWSEvent: both the set and the event loop run on the
+	// same goroutine inside runWebSocket; the defer-nil only fires after the loop exits.
+	wsSend func(payload []byte) error
 }
 
 // NewController creates a Controller with the supplied dependencies.
@@ -87,6 +99,13 @@ func NewController(
 		ctrl.nftAgent = newNFTAgent(nftConn, wgIface, dockerBridge)
 	}
 	return ctrl
+}
+
+// SetSnapshotFunc installs a function used to produce ContainerSnapshots on WS
+// connect and on-demand resync. Intended for agentctl.DockerWatcher.Snapshot.
+// Pass nil to disable snapshots.
+func (c *Controller) SetSnapshotFunc(fn func(ctx context.Context) (models.ContainerSnapshot, error)) {
+	c.snapshotFn = fn
 }
 
 // Register calls the server's register endpoint, stores the assigned IP,
@@ -193,6 +212,12 @@ func (c *Controller) runWebSocket() error {
 
 	slog.Info("websocket connected")
 
+	// Expose a JSON-send closure to handleWSEvent for on-demand snapshots.
+	c.wsSend = func(payload []byte) error {
+		return writeMessage(websocket.TextMessage, payload)
+	}
+	defer func() { c.wsSend = nil }()
+
 	// Start pinger goroutine (replaces HTTP heartbeat).
 	pingDone := make(chan struct{})
 	go func() {
@@ -216,6 +241,9 @@ func (c *Controller) runWebSocket() error {
 
 	// Full sync on connect.
 	c.heartbeatAndSync()
+
+	// Send container snapshot for gatestate reconciliation (no-op if snapshotFn is nil).
+	c.sendSnapshot()
 
 	// Periodic full-sync ticker (consistency check every 60s).
 	syncTicker := time.NewTicker(60 * time.Second)
@@ -275,6 +303,8 @@ func (c *Controller) handleWSEvent(event models.WSEvent) {
 		}
 	case "full_sync":
 		c.heartbeatAndSync()
+	case "agent.request_snapshot":
+		c.sendSnapshot()
 	}
 }
 
@@ -315,6 +345,30 @@ func (c *Controller) handleTunnelDeleted(t models.Tunnel) {
 			slog.Error("remove tunnel from ws event", "tunnel_id", t.ID, "error", err)
 		}
 		delete(c.activeTunnels, t.ID)
+	}
+}
+
+// sendSnapshot writes a ContainerSnapshot message via wsSend. No-op if
+// snapshotFn is nil, wsSend is nil, or the snapshot call errors — errors are
+// logged as warnings and do not propagate; a missing snapshot is non-fatal.
+func (c *Controller) sendSnapshot() {
+	if c.snapshotFn == nil || c.wsSend == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	snap, err := c.snapshotFn(ctx)
+	if err != nil {
+		slog.Warn("container snapshot failed", "error", err)
+		return
+	}
+	payload, err := json.Marshal(snap)
+	if err != nil {
+		slog.Warn("marshal container snapshot", "error", err)
+		return
+	}
+	if err := c.wsSend(payload); err != nil {
+		slog.Warn("send container snapshot", "error", err)
 	}
 }
 
