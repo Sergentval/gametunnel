@@ -187,7 +187,37 @@ Enable `container_gated_tunnels` to gate nft-set membership on actual container 
 
 **When to use:** Enable this flag when you run multiple nodes and want the VPS to automatically take over ports when the home server is offline. Leave disabled (default) for simpler single-node setups or if you prefer explicit port management.
 
-See [spec](docs/superpowers/specs/2026-04-19-container-state-gated-tunnels-design.md) for design details.
+#### Behavior
+
+The home agent subscribes to `docker events` and sends `container.state_update` / `container.snapshot` messages to the server over the existing WebSocket. The server maintains a state machine per tunnel:
+
+| Transition | Effect |
+|-----------|--------|
+| `running → stopped` | Port removed from nft set after **120 s debounce** (tolerates crash-restart flaps). |
+| `stopped → running` | Port added immediately. |
+| `stopped → running → stopped` within 120 s | Debounce cancelled — port never leaves the set. |
+| Agent websocket disconnect | Tunnels hold their current state; ports stay up. When the agent reconnects it sends a full snapshot that reconciles the server. |
+| Panel `suspended=true` | Port removed immediately, regardless of container state. |
+
+Gate state is persisted in `state.json` and survives server restarts. A tunnel loaded from an older state file without the `gate_state` field defaults to `GateRunning` so upgrades don't silently close ports.
+
+#### Observability
+
+- `GET /tunnels` responses include `gate_state` (`unknown` / `running` / `stopped` / `suspended`) and `last_signal` (timestamp of the last agent state update). A `stale` field is reserved on the model for a future release that will flag tunnels whose owning agent's WS has disconnected; it is not populated today.
+- `POST /tunnels/{id}/resync` asks the owning agent to push a fresh `ContainerSnapshot` — useful when you suspect state has drifted.
+
+#### Configuration
+
+```yaml
+pelican:
+  enabled: true
+  container_gated_tunnels: true   # opt-in
+  # ... other pelican fields ...
+```
+
+Rollback is a single flag flip: set back to `false` and restart the server. In-flight debouncers are dropped on shutdown; on the next start tunnels are re-applied from `state.json` as static `game_ports` entries (legacy behaviour) until flipped on again.
+
+See [spec](docs/superpowers/specs/2026-04-19-container-state-gated-tunnels-design.md) for the full design and [implementation plan](docs/superpowers/plans/2026-04-19-container-state-gated-tunnels.md) for how it was built.
 
 ## Features
 

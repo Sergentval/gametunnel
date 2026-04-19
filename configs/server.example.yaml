@@ -76,5 +76,13 @@ pelican:
   port_protocols:
     25565: "tcp"   # Minecraft Java
     19132: "udp"   # Minecraft Bedrock
-  # Gate tunnel nft-set membership on container running state (see README).
+  # Gate tunnel nft-set membership on actual container running state.
+  # When false (default): port is in the nft game_ports set as soon as the
+  # allocation is assigned in Pelican, independent of container state.
+  # When true: port is only in the set while the agent reports the container
+  # as running via Docker events; 120s debounce on running→stopped to absorb
+  # crash-restart flaps. Enables port coexistence across nodes (e.g. VPS-direct
+  # Docker DNAT can claim a port while the home container is stopped). Gate
+  # state is persisted in state.json and survives server restarts. See README
+  # "Container-Gated Tunnels" section for full behaviour + REST endpoints.
   # container_gated_tunnels: false
