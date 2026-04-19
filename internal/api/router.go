@@ -20,6 +20,14 @@ type Dependencies struct {
 	Store         *state.Store
 	StartTime     time.Time
 	WSHub         *WSHub
+
+	// OnContainerStateUpdate is invoked when an agent sends a container.state_update
+	// message over its websocket. Optional. Used by the runtime to feed gatestate.Manager.
+	OnContainerStateUpdate func(models.ContainerStateUpdate)
+
+	// OnContainerSnapshot is invoked when an agent sends a container.snapshot message.
+	// Optional. Used by the runtime to reconcile full state on agent (re)connect.
+	OnContainerSnapshot func(models.ContainerSnapshot)
 }
 
 // NewRouter constructs an http.Handler with all API routes registered.
@@ -39,12 +47,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		registry:  deps.Registry,
 		store:     deps.Store,
 		config:    deps.Config,
+		hub:       deps.WSHub,
 	}
 
 	wsH := &WSHandler{
-		hub:      deps.WSHub,
-		registry: deps.Registry,
-		config:   deps.Config,
+		hub:                    deps.WSHub,
+		registry:               deps.Registry,
+		config:                 deps.Config,
+		onContainerStateUpdate: deps.OnContainerStateUpdate,
+		onContainerSnapshot:    deps.OnContainerSnapshot,
 	}
 
 	// Agent routes (all require auth).
@@ -59,6 +70,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /tunnels", auth(http.HandlerFunc(tunnelH.List)))
 	mux.Handle("GET /tunnels/{id}", auth(http.HandlerFunc(tunnelH.Get)))
 	mux.Handle("DELETE /tunnels/{id}", auth(http.HandlerFunc(tunnelH.Delete)))
+	mux.Handle("POST /tunnels/{id}/resync", auth(http.HandlerFunc(tunnelH.Resync)))
 
 	// Health check — no auth required.
 	startTime := time.Now()

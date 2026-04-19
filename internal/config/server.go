@@ -91,6 +91,9 @@ type PelicanSettings struct {
 	PollIntervalSeconds int               `yaml:"poll_interval_seconds"`
 	DefaultProtocol     string            `yaml:"default_protocol"`
 	PortProtocols       map[int]string    `yaml:"port_protocols"`
+	// ContainerGatedTunnels gates tunnel nft-set membership on container running state.
+	// When false (default), legacy behavior: allocation assigned → port in nft set.
+	ContainerGatedTunnels bool              `yaml:"container_gated_tunnels"`
 }
 
 // ServerConfig is the top-level configuration for the tunnel server.

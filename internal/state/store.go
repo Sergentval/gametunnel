@@ -51,6 +51,13 @@ func NewStore(path string) (*Store, error) {
 	if sd.Agents != nil {
 		s.agents = sd.Agents
 	}
+	// Schema migration: tunnels without gate_state are treated as GateRunning
+	// so existing servers do not lose their nft-set membership on upgrade.
+	for _, t := range sd.Tunnels {
+		if t.GateState == "" {
+			t.GateState = models.GateRunning
+		}
+	}
 	if sd.Tunnels != nil {
 		s.tunnels = sd.Tunnels
 	}

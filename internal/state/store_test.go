@@ -1,6 +1,7 @@
 package state
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -225,5 +226,25 @@ func TestNewFileNonexistentParentDir(t *testing.T) {
 	}
 	if s2.GetAgent("x") == nil {
 		t.Error("agent x not found after reload")
+	}
+}
+
+func TestLoad_V1MigratesToGateRunning(t *testing.T) {
+	// A v1 state.json had no gate_state field.
+	v1 := `{"agents":{},"tunnels":{"t1":{"id":"t1","name":"n","protocol":"udp","public_port":7777,"local_port":7777,"agent_id":"a","source":"manual","status":"active","created_at":"2026-04-19T00:00:00Z"}}}`
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.GetTunnel("t1")
+	if got == nil {
+		t.Fatal("tunnel missing")
+	}
+	if got.GateState != models.GateRunning {
+		t.Errorf("expected GateRunning after v1 load, got %q", got.GateState)
 	}
 }
