@@ -17,6 +17,7 @@ import (
 	"github.com/Sergentval/gametunnel/internal/agent"
 	"github.com/Sergentval/gametunnel/internal/api"
 	"github.com/Sergentval/gametunnel/internal/config"
+	"github.com/Sergentval/gametunnel/internal/gatestate"
 	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/Sergentval/gametunnel/internal/netutil"
 	"github.com/Sergentval/gametunnel/internal/nftconn"
@@ -172,6 +173,17 @@ func serverRun(args []string) {
 
 	tunnelMgr := tunnel.NewManager(tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP, cfg.WireGuard.Interface, nftFwd)
 
+	// Container-state-gated tunnels (feature-flagged).
+	// When enabled, tunnel.Manager.Create() does not add the port to nft directly;
+	// gatestate.Manager decides based on agent-reported container state.
+	var gatestateMgr *gatestate.Manager
+	if cfg.Pelican.ContainerGatedTunnels {
+		tunnelMgr.SetGatedMode(true)
+		portAdapter := &tunnelPortAdapter{mgr: tunnelMgr}
+		gatestateMgr = gatestate.NewManager(gatestate.NewWallClock(), portAdapter, 120*time.Second)
+		slog.Info("container-state-gated tunnels enabled", "debounce_seconds", 120)
+	}
+
 	// Wire tunnel change events to the WebSocket hub.
 	tunnelMgr.OnTunnelChange = func(event string, t models.Tunnel) {
 		wsEvent := models.WSEvent{Type: event, Tunnel: &t}
@@ -245,6 +257,16 @@ func serverRun(args []string) {
 		Store:         store,
 		StartTime:     time.Now(),
 		WSHub:         wsHub,
+	}
+	if gatestateMgr != nil {
+		deps.OnContainerStateUpdate = func(msg models.ContainerStateUpdate) {
+			gatestateMgr.OnStateUpdate(msg.ServerUUID, models.GateState(msg.State), msg.Timestamp)
+		}
+		deps.OnContainerSnapshot = func(msg models.ContainerSnapshot) {
+			for _, c := range msg.Containers {
+				gatestateMgr.OnStateUpdate(c.ServerUUID, models.GateState(c.State), msg.SnapshotAt)
+			}
+		}
 	}
 	handler := api.NewRouter(deps)
 
@@ -373,6 +395,27 @@ func serverRun(args []string) {
 	}
 
 	slog.Info("shutdown complete")
+}
+
+// tunnelPortAdapter bridges gatestate.PortController to tunnel.Manager.SetGateState,
+// looking up the tunnel ID by port before applying the state change.
+type tunnelPortAdapter struct{ mgr *tunnel.Manager }
+
+func (a *tunnelPortAdapter) AddPort(port int) error {
+	id, ok := a.mgr.TunnelIDByPort(port)
+	if !ok {
+		return fmt.Errorf("no tunnel for port %d", port)
+	}
+	return a.mgr.SetGateState(id, models.GateRunning)
+}
+
+func (a *tunnelPortAdapter) RemovePort(port int) error {
+	id, ok := a.mgr.TunnelIDByPort(port)
+	if !ok {
+		// Nothing to remove — tunnel may have been deleted already.
+		return nil
+	}
+	return a.mgr.SetGateState(id, models.GateStopped)
 }
 
 // subnetFirstIP returns the first usable host address (.1) of a CIDR subnet.
