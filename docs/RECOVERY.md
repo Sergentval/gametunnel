@@ -19,7 +19,7 @@ ephemeral kernel state, then starting services): tunnels restore within
 |---|---|---|
 | Server WG private key | `/etc/gametunnel/server.yaml` | Same identity across reboots |
 | Agent WG private key | `/etc/gametunnel/agent.yaml` | Same identity across reboots |
-| Tunnel + agent state | `/var/lib/gametunnel/state.json` | Auto-flushed on every write |
+| Tunnel + agent state | `/var/lib/gametunnel/state.json` | Auto-flushed on every write (v2 schema — includes `gate_state` per tunnel) |
 | Pelican Docker subnet | `/etc/pelican/config.yml` | `172.28.0.0/16` (avoids VPS collision) |
 | BBR + TCP tuning | `/etc/sysctl.d/99-bbr.conf` | Auto-loaded by `systemd-sysctl.service` |
 | UFW firewall rules | `/etc/ufw/` | Auto-loaded by `ufw.service` |
@@ -50,7 +50,13 @@ ephemeral kernel state, then starting services): tunnels restore within
 2. network-online.target          → ens3 up, default route ready
 3. docker.service                 → container runtime
 4. gametunnel-server.service      → wg-gt up, nftables chains, WG peers restored
-                                     from state.json, security layer installed
+                                     from state.json, security layer installed.
+                                     If container_gated_tunnels=true: each
+                                     restored tunnel is re-registered in
+                                     gatestate.Manager with its persisted
+                                     GateState; running tunnels re-enter the
+                                     nft game_ports set, stopped/suspended
+                                     ones stay out (no bypass on restart).
 5. gametunnel-egress.service      → FORWARD ACCEPT, MASQUERADE, MSS clamp,
                                      route 172.28.0.0/16 → wg-gt
 6. pelican-panel (Docker)         → Panel available

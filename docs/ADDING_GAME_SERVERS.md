@@ -50,6 +50,8 @@ curl -s http://10.99.0.1:8090/healthz | jq
 sudo nft list set ip gametunnel game_ports   # ports should appear in the set
 ```
 
+**Note:** if `container_gated_tunnels` is enabled in `server.yaml`, a port only appears in `game_ports` once the backing container is reported `running` by the home agent's Docker events watcher. A fresh allocation without a running container shows up as a tunnel (`GET /tunnels`) but with `gate_state: unknown` and no nft entry until the container starts. Stopping the container keeps the port in the set for a 120 s debounce window before removing it.
+
 Verify on home:
 ```bash
 sudo nft list table ip gametunnel | grep dnat   # one DNAT per port (TCP + UDP)
