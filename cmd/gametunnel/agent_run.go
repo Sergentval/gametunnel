@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
@@ -10,9 +11,11 @@ import (
 
 	"github.com/Sergentval/gametunnel/internal/agentctl"
 	"github.com/Sergentval/gametunnel/internal/config"
+	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/Sergentval/gametunnel/internal/netutil"
 	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/routing"
+	dockerclient "github.com/docker/docker/client"
 )
 
 func agentRun(args []string) {
@@ -92,6 +95,22 @@ func agentRun(args []string) {
 		nftConn,
 	)
 
+	// ── Docker events watcher (optional) ───────────────────────────────────────
+	// Tries to connect to a local Docker daemon. If unavailable, agent continues
+	// without container state reporting — the feature is off by default anyway.
+	var dockerWatcher *agentctl.DockerWatcher
+	if dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation()); err == nil {
+		dockerWatcher = agentctl.NewDockerWatcher(dockerCli, cfg.Agent.ID, func(msg models.ContainerStateUpdate) {
+			if err := ctrl.SendStateUpdate(msg); err != nil {
+				slog.Debug("drop state update (WS not ready)", "uuid", msg.ServerUUID, "state", msg.State, "error", err)
+			}
+		})
+		ctrl.SetSnapshotFunc(dockerWatcher.Snapshot)
+		slog.Info("docker events watcher initialised")
+	} else {
+		slog.Warn("docker daemon unavailable — container state reporting disabled", "error", err)
+	}
+
 	// ── Registration with retry ─────────────────────────────────────────────
 	// A stop channel shared with the signal handler so SIGINT/SIGTERM during
 	// the retry loop causes a clean exit.
@@ -113,10 +132,33 @@ func agentRun(args []string) {
 	}
 
 	// ── Run controller in main goroutine ─────────────────────────────────────
-	// Signal handler stops the controller.
+	// Context cancelled on shutdown so the docker watcher goroutine exits cleanly.
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+
+	// Run the docker watcher in a goroutine tied to the agent shutdown context.
+	if dockerWatcher != nil {
+		go func() {
+			for {
+				if err := dockerWatcher.Run(ctx); err != nil && ctx.Err() == nil {
+					slog.Warn("docker watcher exited, restarting in 5s", "error", err)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Second):
+					}
+					continue
+				}
+				return
+			}
+		}()
+	}
+
+	// Signal handler stops the controller and cancels the watcher context.
 	go func() {
 		sig := <-quit
 		slog.Info("received signal, stopping", "signal", sig)
+		cancelCtx()
 		ctrl.Stop()
 	}()
 

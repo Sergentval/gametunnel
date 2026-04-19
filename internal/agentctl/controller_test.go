@@ -1,6 +1,7 @@
 package agentctl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -292,5 +293,33 @@ func TestController_handleWSEvent_RequestSnapshot(t *testing.T) {
 
 	if sent.Load() != 1 {
 		t.Errorf("wsSend called %d times, want 1", sent.Load())
+	}
+}
+
+// ── SendStateUpdate tests ────────────────────────────────────────────────────
+
+func TestController_SendStateUpdate_NoActiveWS(t *testing.T) {
+	c := &Controller{} // wsSend is nil
+	err := c.SendStateUpdate(models.ContainerStateUpdate{Type: "container.state_update", State: "running"})
+	if err == nil {
+		t.Error("expected error when no WS active")
+	}
+}
+
+func TestController_SendStateUpdate_Success(t *testing.T) {
+	var gotPayload []byte
+	c := &Controller{}
+	c.wsSend = func(p []byte) error { gotPayload = p; return nil }
+	err := c.SendStateUpdate(models.ContainerStateUpdate{
+		Type: "container.state_update", AgentID: "a", ServerUUID: "u1", State: "running",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(gotPayload) == 0 {
+		t.Error("payload not sent")
+	}
+	if !bytes.Contains(gotPayload, []byte(`"state":"running"`)) {
+		t.Errorf("payload missing state: %s", gotPayload)
 	}
 }

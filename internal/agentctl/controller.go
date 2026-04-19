@@ -348,6 +348,22 @@ func (c *Controller) handleTunnelDeleted(t models.Tunnel) {
 	}
 }
 
+// SendStateUpdate pushes a ContainerStateUpdate over the agent's WS to the
+// server. Returns an error if no WS is currently connected. Safe to call
+// concurrently — writes are serialised by the WS writer mutex established
+// in runWebSocket.
+func (c *Controller) SendStateUpdate(msg models.ContainerStateUpdate) error {
+	send := c.wsSend
+	if send == nil {
+		return fmt.Errorf("no active websocket connection")
+	}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal state update: %w", err)
+	}
+	return send(payload)
+}
+
 // sendSnapshot writes a ContainerSnapshot message via wsSend. No-op if
 // snapshotFn is nil, wsSend is nil, or the snapshot call errors — errors are
 // logged as warnings and do not propagate; a missing snapshot is non-fatal.
