@@ -138,3 +138,28 @@ func SanitizeGREName(name string) string {
 
 	return full
 }
+
+// ContainerStateUpdate is sent from agent → server on each docker state transition.
+type ContainerStateUpdate struct {
+	Type       string    `json:"type"`        // always "container.state_update"
+	AgentID    string    `json:"agent_id"`
+	ServerUUID string    `json:"server_uuid"` // Pelican server UUID
+	State      string    `json:"state"`       // "running" | "stopped" | "starting" | "stopping"
+	Timestamp  time.Time `json:"timestamp"`
+	Cause      string    `json:"cause,omitempty"` // docker event: "start","die","stop","restart",…
+}
+
+// ContainerSnapshot is sent from agent → server on (re)connect: full snapshot of known containers.
+type ContainerSnapshot struct {
+	Type       string                  `json:"type"`        // always "container.snapshot"
+	AgentID    string                  `json:"agent_id"`
+	Containers []ContainerSnapshotItem `json:"containers"`
+	SnapshotAt time.Time               `json:"snapshot_at"`
+}
+
+// ContainerSnapshotItem describes a single container's state within a ContainerSnapshot.
+type ContainerSnapshotItem struct {
+	ServerUUID string    `json:"server_uuid"`
+	State      string    `json:"state"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+}

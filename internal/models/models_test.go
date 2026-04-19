@@ -125,3 +125,56 @@ func TestTunnelGateStateRoundtrip(t *testing.T) {
 		t.Errorf("LastSignal mismatch")
 	}
 }
+
+func TestContainerStateUpdateRoundtrip(t *testing.T) {
+	orig := ContainerStateUpdate{
+		Type:       "container.state_update",
+		AgentID:    "home",
+		ServerUUID: "5a71b99d-bd4a-4cd1-af69-285f5067687b",
+		State:      "running",
+		Timestamp:  time.Now().UTC().Truncate(time.Second),
+		Cause:      "start",
+	}
+	b, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ContainerStateUpdate
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != orig {
+		t.Errorf("roundtrip mismatch: %+v vs %+v", got, orig)
+	}
+}
+
+func TestContainerSnapshotRoundtrip(t *testing.T) {
+	orig := ContainerSnapshot{
+		Type:       "container.snapshot",
+		AgentID:    "home",
+		SnapshotAt: time.Now().UTC().Truncate(time.Second),
+		Containers: []ContainerSnapshotItem{
+			{ServerUUID: "u1", State: "running", StartedAt: time.Now().UTC().Truncate(time.Second)},
+			{ServerUUID: "u2", State: "stopped"},
+		},
+	}
+	b, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ContainerSnapshot
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != orig.Type || got.AgentID != orig.AgentID ||
+		!got.SnapshotAt.Equal(orig.SnapshotAt) ||
+		len(got.Containers) != len(orig.Containers) {
+		t.Errorf("header mismatch: %+v", got)
+	}
+	for i, want := range orig.Containers {
+		g := got.Containers[i]
+		if g.ServerUUID != want.ServerUUID || g.State != want.State || !g.StartedAt.Equal(want.StartedAt) {
+			t.Errorf("Containers[%d] mismatch: got %+v, want %+v", i, g, want)
+		}
+	}
+}
