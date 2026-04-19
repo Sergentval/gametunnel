@@ -31,6 +31,17 @@ const (
 	TunnelStatusInactive TunnelStatus = "inactive"
 )
 
+// GateState gates a tunnel's nft-set membership on the backing container's running state.
+// Orthogonal to TunnelStatus, which describes plumbing health (GRE, rules, peer).
+type GateState string
+
+const (
+	GateUnknown   GateState = "unknown"
+	GateRunning   GateState = "running"
+	GateStopped   GateState = "stopped"
+	GateSuspended GateState = "suspended"
+)
+
 // AgentStatus represents the connectivity state of an agent.
 type AgentStatus string
 
@@ -61,9 +72,13 @@ type Tunnel struct {
 	Source              TunnelSource `json:"source"`
 	PelicanAllocationID *int         `json:"pelican_allocation_id,omitempty"`
 	PelicanServerID     *int         `json:"pelican_server_id,omitempty"`
+	PelicanServerUUID   *string      `json:"pelican_server_uuid,omitempty"`
 	ContainerIP         string       `json:"container_ip,omitempty"`
 	Status              TunnelStatus `json:"status"`
 	CreatedAt           time.Time    `json:"created_at"`
+	GateState           GateState    `json:"gate_state"`
+	LastSignal          time.Time    `json:"last_signal"`
+	StaleFlag           bool         `json:"stale,omitempty"`
 }
 
 // GREConfig holds the parameters needed to create a GRE tunnel interface.
@@ -123,4 +138,29 @@ func SanitizeGREName(name string) string {
 	full = strings.TrimRight(full, "-")
 
 	return full
+}
+
+// ContainerStateUpdate is sent from agent → server on each docker state transition.
+type ContainerStateUpdate struct {
+	Type       string    `json:"type"`        // always "container.state_update"
+	AgentID    string    `json:"agent_id"`
+	ServerUUID string    `json:"server_uuid"` // Pelican server UUID
+	State      string    `json:"state"`       // "running" | "stopped" | "starting" | "stopping"
+	Timestamp  time.Time `json:"timestamp"`
+	Cause      string    `json:"cause,omitempty"` // docker event: "start","die","stop","restart",…
+}
+
+// ContainerSnapshot is sent from agent → server on (re)connect: full snapshot of known containers.
+type ContainerSnapshot struct {
+	Type       string                  `json:"type"`        // always "container.snapshot"
+	AgentID    string                  `json:"agent_id"`
+	Containers []ContainerSnapshotItem `json:"containers"`
+	SnapshotAt time.Time               `json:"snapshot_at"`
+}
+
+// ContainerSnapshotItem describes a single container's state within a ContainerSnapshot.
+type ContainerSnapshotItem struct {
+	ServerUUID string    `json:"server_uuid"`
+	State      string    `json:"state"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
 }

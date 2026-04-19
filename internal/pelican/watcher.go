@@ -23,6 +23,13 @@ type PelicanAPI interface {
 	BuildAllocationServerMap(nodeID int) (map[int]Server, error)
 }
 
+// GatestateTracker is the subset of gatestate.Manager the watcher uses.
+// Defined as an interface so the pelican package doesn't depend on gatestate.
+type GatestateTracker interface {
+	Track(uuid string, port int)
+	Untrack(uuid string)
+}
+
 // WatcherConfig holds configuration for the Pelican watcher.
 type WatcherConfig struct {
 	// NodeID is the Pelican node ID whose allocations should be watched.
@@ -36,6 +43,10 @@ type WatcherConfig struct {
 	DefaultProto string
 	// PortProtocols overrides the protocol for specific ports.
 	PortProtocols map[int]string
+	// GatestateTracker is optional. When non-nil, the watcher calls Track on
+	// tunnel create and Untrack on tunnel delete so gatestate.Manager knows
+	// which tunnels to gate on container state.
+	GatestateTracker GatestateTracker
 }
 
 // Watcher syncs Pelican allocations to tunnel.Manager entries.
@@ -141,14 +152,21 @@ func (w *Watcher) Sync() error {
 			PelicanAllocationID: &allocID,
 			PelicanServerID:     &serverID,
 		}
+		if srv.UUID != "" {
+			uuid := srv.UUID
+			req.PelicanServerUUID = &uuid
+		}
 
 		tun, err := w.tunnelMgr.Create(req)
 		if err != nil {
 			slog.Error("pelican watcher: create tunnel", "port", port, "error", err)
 		} else {
-			slog.Info("pelican watcher: created tunnel", "port", port, "alloc_id", allocID, "server_id", serverID)
+			slog.Info("pelican watcher: created tunnel", "port", port, "alloc_id", allocID, "server_id", serverID, "server_uuid", srv.UUID)
 			if storeErr := w.store.SetTunnel(&tun); storeErr != nil {
 				slog.Error("pelican watcher: persist state after create", "port", port, "error", storeErr)
+			}
+			if w.config.GatestateTracker != nil && srv.UUID != "" {
+				w.config.GatestateTracker.Track(srv.UUID, port)
 			}
 		}
 	}
@@ -156,6 +174,9 @@ func (w *Watcher) Sync() error {
 	// Step 6: Delete tunnels for ports that are no longer assigned.
 	for port, t := range existing {
 		if _, stillAssigned := assignedPorts[port]; !stillAssigned {
+			if w.config.GatestateTracker != nil && t.PelicanServerUUID != nil {
+				w.config.GatestateTracker.Untrack(*t.PelicanServerUUID)
+			}
 			if err := w.tunnelMgr.Delete(t.ID); err != nil {
 				slog.Error("pelican watcher: delete orphaned tunnel", "tunnel_id", t.ID, "port", port, "error", err)
 			} else {

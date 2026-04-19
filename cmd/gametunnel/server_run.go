@@ -17,6 +17,7 @@ import (
 	"github.com/Sergentval/gametunnel/internal/agent"
 	"github.com/Sergentval/gametunnel/internal/api"
 	"github.com/Sergentval/gametunnel/internal/config"
+	"github.com/Sergentval/gametunnel/internal/gatestate"
 	"github.com/Sergentval/gametunnel/internal/models"
 	"github.com/Sergentval/gametunnel/internal/netutil"
 	"github.com/Sergentval/gametunnel/internal/nftconn"
@@ -172,8 +173,26 @@ func serverRun(args []string) {
 
 	tunnelMgr := tunnel.NewManager(tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP, cfg.WireGuard.Interface, nftFwd)
 
+	// Container-state-gated tunnels (feature-flagged).
+	// When enabled, tunnel.Manager.Create() does not add the port to nft directly;
+	// gatestate.Manager decides based on agent-reported container state.
+	var gatestateMgr *gatestate.Manager
+	if cfg.Pelican.ContainerGatedTunnels {
+		tunnelMgr.SetGatedMode(true)
+		portAdapter := &tunnelPortAdapter{mgr: tunnelMgr}
+		gatestateMgr = gatestate.NewManager(gatestate.NewWallClock(), portAdapter, 120*time.Second)
+		slog.Info("container-state-gated tunnels enabled", "debounce_seconds", 120)
+	}
+
 	// Wire tunnel change events to the WebSocket hub.
+	// Gate-state changes are also persisted here so that runtime transitions
+	// (GateRunning ↔ GateStopped/GateSuspended) survive a server restart.
 	tunnelMgr.OnTunnelChange = func(event string, t models.Tunnel) {
+		if event == "tunnel_gate_changed" {
+			if err := store.SetTunnel(&t); err != nil {
+				slog.Warn("persist tunnel gate state", "tunnel_id", t.ID, "error", err)
+			}
+		}
 		wsEvent := models.WSEvent{Type: event, Tunnel: &t}
 		if err := wsHub.Send(t.AgentID, wsEvent); err != nil {
 			slog.Debug("ws push tunnel event", "event", event, "agent_id", t.AgentID, "error", err)
@@ -206,6 +225,28 @@ func serverRun(args []string) {
 	}
 	tunnelMgr.LoadFromState(restoredTunnels)
 
+	// ── Re-seed gatestate.Manager from restored tunnel state ────────────────
+	// When container-gated tunnels are enabled, gatestate.Manager starts empty
+	// on restart. Without seeding it here, early agent container.state_update
+	// messages are silently dropped (no tracked entry), and any subsequent
+	// Pelican watcher Track() call would start the machine at GateUnknown —
+	// whose GateUnknown+stopped transition is EffectNone, leaving a stale nft
+	// rule permanently open. Seeding with TrackWithState(GateRunning) ensures
+	// the nft set reflects reality from the first moment.
+	if gatestateMgr != nil {
+		for _, t := range restoredTunnels {
+			if t.Status != models.TunnelStatusActive {
+				continue
+			}
+			if t.PelicanServerUUID == nil {
+				continue
+			}
+			if err := gatestateMgr.TrackWithState(*t.PelicanServerUUID, t.PublicPort, t.GateState); err != nil {
+				slog.Warn("restore gatestate tracking", "uuid", *t.PelicanServerUUID, "port", t.PublicPort, "error", err)
+			}
+		}
+	}
+
 	// ── Re-create kernel resources for restored tunnels ─────────────────────
 	// After a restart, state.json has tunnel records but the kernel has no
 	// iptables rules. WireGuard is already up; just re-apply MARK rules and
@@ -214,7 +255,13 @@ func serverRun(args []string) {
 		if t.Status != models.TunnelStatusActive {
 			continue
 		}
-
+		// In gated mode, nft membership is governed by GateState — TrackWithState
+		// already restored running tunnels above. Skip AddRule for tunnels that
+		// are not currently in GateRunning so a stopped/suspended tunnel at
+		// shutdown does not have its port silently re-opened at startup.
+		if gatestateMgr != nil && t.GateState != models.GateRunning {
+			continue
+		}
 		// Re-create MARK rule
 		if err := tproxyMgr.AddRule(string(t.Protocol), t.PublicPort, cfg.TProxy.Mark); err != nil {
 			slog.Warn("re-create MARK rule", "port", t.PublicPort, "error", err)
@@ -245,6 +292,16 @@ func serverRun(args []string) {
 		Store:         store,
 		StartTime:     time.Now(),
 		WSHub:         wsHub,
+	}
+	if gatestateMgr != nil {
+		deps.OnContainerStateUpdate = func(msg models.ContainerStateUpdate) {
+			gatestateMgr.OnStateUpdate(msg.ServerUUID, models.GateState(msg.State), msg.Timestamp)
+		}
+		deps.OnContainerSnapshot = func(msg models.ContainerSnapshot) {
+			for _, c := range msg.Containers {
+				gatestateMgr.OnStateUpdate(c.ServerUUID, models.GateState(c.State), msg.SnapshotAt)
+			}
+		}
 	}
 	handler := api.NewRouter(deps)
 
@@ -278,11 +335,12 @@ func serverRun(args []string) {
 		pelicanClient := pelican.NewPelicanClient(cfg.Pelican.PanelURL, cfg.Pelican.APIKey)
 
 		watcherCfg := pelican.WatcherConfig{
-			NodeID:         cfg.Pelican.NodeID,
-			DefaultAgentID: cfg.Pelican.DefaultAgentID,
-			AgentRegistry:  registry,
-			DefaultProto:   cfg.Pelican.DefaultProtocol,
-			PortProtocols:  cfg.Pelican.PortProtocols,
+			NodeID:           cfg.Pelican.NodeID,
+			DefaultAgentID:   cfg.Pelican.DefaultAgentID,
+			AgentRegistry:    registry,
+			DefaultProto:     cfg.Pelican.DefaultProtocol,
+			PortProtocols:    cfg.Pelican.PortProtocols,
+			GatestateTracker: gatestateMgr, // nil when ContainerGatedTunnels is off — watcher checks
 		}
 		watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr, store)
 
@@ -373,6 +431,27 @@ func serverRun(args []string) {
 	}
 
 	slog.Info("shutdown complete")
+}
+
+// tunnelPortAdapter bridges gatestate.PortController to tunnel.Manager.SetGateState,
+// looking up the tunnel ID by port before applying the state change.
+type tunnelPortAdapter struct{ mgr *tunnel.Manager }
+
+func (a *tunnelPortAdapter) AddPort(port int) error {
+	id, ok := a.mgr.TunnelIDByPort(port)
+	if !ok {
+		return fmt.Errorf("no tunnel for port %d", port)
+	}
+	return a.mgr.SetGateState(id, models.GateRunning)
+}
+
+func (a *tunnelPortAdapter) RemovePort(port int) error {
+	id, ok := a.mgr.TunnelIDByPort(port)
+	if !ok {
+		// Nothing to remove — tunnel may have been deleted already.
+		return nil
+	}
+	return a.mgr.SetGateState(id, models.GateStopped)
 }
 
 // subnetFirstIP returns the first usable host address (.1) of a CIDR subnet.

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // writeTemp writes content to a temp file and returns the path.
@@ -346,4 +348,31 @@ func TestAgentByID(t *testing.T) {
 			t.Errorf("expected nil, got %+v", a)
 		}
 	})
+}
+
+func TestPelicanContainerGatedTunnelsDefaultsFalse(t *testing.T) {
+	var c ServerConfig
+	c.applyDefaults()
+	if c.Pelican.ContainerGatedTunnels {
+		t.Errorf("ContainerGatedTunnels should default to false")
+	}
+}
+
+func TestPelicanContainerGatedTunnelsYAMLParse(t *testing.T) {
+	y := []byte(`
+pelican:
+  enabled: true
+  panel_url: http://x
+  api_key: k
+  node_id: 1
+  default_agent_id: a
+  container_gated_tunnels: true
+`)
+	var c ServerConfig
+	if err := yaml.Unmarshal(y, &c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Pelican.ContainerGatedTunnels {
+		t.Errorf("expected ContainerGatedTunnels=true after yaml parse")
+	}
 }

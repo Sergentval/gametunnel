@@ -283,3 +283,74 @@ func TestCreateAndDeleteTunnel(t *testing.T) {
 		t.Fatalf("delete tunnel: expected 204, got %d", deleteResp.StatusCode)
 	}
 }
+
+func TestTunnel_Resync_Success(t *testing.T) {
+	env := setupTestAPI(t)
+
+	// Register agent first so it has an assigned IP.
+	regBody := map[string]string{
+		"id":         env.agentID,
+		"public_key": "test-public-key",
+	}
+	regResp := env.request(http.MethodPost, "/agents/register", regBody, env.token)
+	regResp.Body.Close()
+	if regResp.StatusCode != http.StatusOK {
+		t.Fatalf("register agent: expected 200, got %d", regResp.StatusCode)
+	}
+
+	// Create tunnel.
+	tunnelBody := map[string]any{
+		"name":        "test-tunnel",
+		"protocol":    "tcp",
+		"public_port": 8080,
+		"agent_id":    env.agentID,
+		"local_port":  8080,
+	}
+	createResp := env.request(http.MethodPost, "/tunnels", tunnelBody, env.token)
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create tunnel: expected 201, got %d", createResp.StatusCode)
+	}
+
+	var tun map[string]any
+	if err := json.NewDecoder(createResp.Body).Decode(&tun); err != nil {
+		t.Fatalf("decode tunnel response: %v", err)
+	}
+
+	tunnelID, ok := tun["id"].(string)
+	if !ok || tunnelID == "" {
+		t.Fatalf("expected non-empty tunnel id, got %v", tun["id"])
+	}
+
+	// Resync the tunnel (WS not connected, so status will be "queued").
+	resyncPath := fmt.Sprintf("/tunnels/%s/resync", tunnelID)
+	resyncResp := env.request(http.MethodPost, resyncPath, nil, env.token)
+	defer resyncResp.Body.Close()
+
+	if resyncResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("resync tunnel: expected 202, got %d", resyncResp.StatusCode)
+	}
+
+	var resyncBody map[string]any
+	if err := json.NewDecoder(resyncResp.Body).Decode(&resyncBody); err != nil {
+		t.Fatalf("decode resync response: %v", err)
+	}
+
+	// Since WS isn't connected in test, status should be "queued"
+	if resyncBody["status"] != "queued" {
+		t.Fatalf("expected status=queued, got %v", resyncBody["status"])
+	}
+}
+
+func TestTunnel_Resync_NotFound(t *testing.T) {
+	env := setupTestAPI(t)
+
+	resyncPath := "/tunnels/nonexistent/resync"
+	resyncResp := env.request(http.MethodPost, resyncPath, nil, env.token)
+	defer resyncResp.Body.Close()
+
+	if resyncResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("resync nonexistent tunnel: expected 404, got %d", resyncResp.StatusCode)
+	}
+}

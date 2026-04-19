@@ -174,6 +174,21 @@ http:
           - url: "http://10.99.0.2:8443"
 ```
 
+### Container-Gated Tunnels
+
+By default, a tunnel's port is added to the kernel's `game_ports` nftables set as soon as the Pelican allocation is assigned, and stays there until the allocation is removed — regardless of whether the backing container is running.
+
+Enable `container_gated_tunnels` to gate nft-set membership on actual container running state. When `true`, the port is only in the set while the backing container is reported `running` by the home agent's Docker events watcher.
+
+**Benefits:**
+- **Port coexistence across nodes** — VPS-direct Docker DNAT can use a port when the home server is offline
+- **Clean kernel state** — no marked-but-dead ports accumulate in the nft set
+- **Implicit failover** — when the home agent stops, the VPS can claim the port via regular Docker DNAT without manual intervention
+
+**When to use:** Enable this flag when you run multiple nodes and want the VPS to automatically take over ports when the home server is offline. Leave disabled (default) for simpler single-node setups or if you prefer explicit port management.
+
+See [spec](docs/superpowers/specs/2026-04-19-container-state-gated-tunnels-design.md) for design details.
+
 ## Features
 
 - **Source IP preservation** — game servers see real player IPs (TCP + UDP)

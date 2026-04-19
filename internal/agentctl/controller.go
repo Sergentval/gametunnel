@@ -2,11 +2,13 @@ package agentctl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
@@ -47,6 +49,20 @@ type Controller struct {
 	connmarkRefCount    int // ref count for connmark-based reply routing
 	stopCh              chan struct{}
 	loopWg              sync.WaitGroup
+
+	// snapshotFn, if set, is invoked on WS connect and on agent.request_snapshot
+	// to produce a ContainerSnapshot sent to the server. Nil is valid — no
+	// snapshot is sent if not configured.
+	// Written by SetSnapshotFunc and read by sendSnapshot/handleWSEvent without
+	// holding a mutex; use atomic.Pointer to eliminate the data race (same pattern
+	// as wsSend).
+	snapshotFn atomic.Pointer[func(ctx context.Context) (models.ContainerSnapshot, error)]
+
+	// wsSend holds a pointer to the active WebSocket send function.
+	// Written on the WS event-loop goroutine and read on DockerWatcher
+	// goroutines; protected with atomic.Pointer to eliminate the data race.
+	// Nil pointer outside of an active WS session.
+	wsSend atomic.Pointer[func([]byte) error]
 }
 
 // NewController creates a Controller with the supplied dependencies.
@@ -87,6 +103,17 @@ func NewController(
 		ctrl.nftAgent = newNFTAgent(nftConn, wgIface, dockerBridge)
 	}
 	return ctrl
+}
+
+// SetSnapshotFunc installs a function used to produce ContainerSnapshots on WS
+// connect and on-demand resync. Intended for agentctl.DockerWatcher.Snapshot.
+// Pass nil to disable snapshots. Safe to call concurrently.
+func (c *Controller) SetSnapshotFunc(fn func(ctx context.Context) (models.ContainerSnapshot, error)) {
+	if fn == nil {
+		c.snapshotFn.Store(nil)
+	} else {
+		c.snapshotFn.Store(&fn)
+	}
 }
 
 // Register calls the server's register endpoint, stores the assigned IP,
@@ -193,6 +220,13 @@ func (c *Controller) runWebSocket() error {
 
 	slog.Info("websocket connected")
 
+	// Expose a JSON-send closure to handleWSEvent for on-demand snapshots.
+	sendFn := func(payload []byte) error {
+		return writeMessage(websocket.TextMessage, payload)
+	}
+	c.wsSend.Store(&sendFn)
+	defer c.wsSend.Store(nil)
+
 	// Start pinger goroutine (replaces HTTP heartbeat).
 	pingDone := make(chan struct{})
 	go func() {
@@ -216,6 +250,9 @@ func (c *Controller) runWebSocket() error {
 
 	// Full sync on connect.
 	c.heartbeatAndSync()
+
+	// Send container snapshot for gatestate reconciliation (no-op if snapshotFn is nil).
+	c.sendSnapshot()
 
 	// Periodic full-sync ticker (consistency check every 60s).
 	syncTicker := time.NewTicker(60 * time.Second)
@@ -275,6 +312,8 @@ func (c *Controller) handleWSEvent(event models.WSEvent) {
 		}
 	case "full_sync":
 		c.heartbeatAndSync()
+	case "agent.request_snapshot":
+		c.sendSnapshot()
 	}
 }
 
@@ -315,6 +354,48 @@ func (c *Controller) handleTunnelDeleted(t models.Tunnel) {
 			slog.Error("remove tunnel from ws event", "tunnel_id", t.ID, "error", err)
 		}
 		delete(c.activeTunnels, t.ID)
+	}
+}
+
+// SendStateUpdate pushes a ContainerStateUpdate over the agent's WS to the
+// server. Returns an error if no WS is currently connected. Safe to call
+// concurrently — the atomic load is race-free, and writes are serialised by
+// the WS writer mutex established in runWebSocket.
+func (c *Controller) SendStateUpdate(msg models.ContainerStateUpdate) error {
+	sendPtr := c.wsSend.Load()
+	if sendPtr == nil {
+		return fmt.Errorf("no active websocket connection")
+	}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal state update: %w", err)
+	}
+	return (*sendPtr)(payload)
+}
+
+// sendSnapshot writes a ContainerSnapshot message via wsSend. No-op if
+// snapshotFn is nil, wsSend is nil, or the snapshot call errors — errors are
+// logged as warnings and do not propagate; a missing snapshot is non-fatal.
+func (c *Controller) sendSnapshot() {
+	fnPtr := c.snapshotFn.Load()
+	sendPtr := c.wsSend.Load()
+	if fnPtr == nil || sendPtr == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	snap, err := (*fnPtr)(ctx)
+	if err != nil {
+		slog.Warn("container snapshot failed", "error", err)
+		return
+	}
+	payload, err := json.Marshal(snap)
+	if err != nil {
+		slog.Warn("marshal container snapshot", "error", err)
+		return
+	}
+	if err := (*sendPtr)(payload); err != nil {
+		slog.Warn("send container snapshot", "error", err)
 	}
 }
 

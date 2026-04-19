@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 
@@ -18,6 +19,7 @@ type TunnelHandler struct {
 	registry  *agent.Registry
 	store     *state.Store
 	config    *config.ServerConfig
+	hub       *WSHub
 }
 
 // createTunnelRequest is the JSON body for POST /tunnels.
@@ -154,4 +156,28 @@ func (h *TunnelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Resync asks the agent owning a tunnel to re-send its full ContainerSnapshot.
+// Returns 202 Accepted immediately; the snapshot arrives asynchronously over
+// the agent's WS connection. Returns 404 if the tunnel does not exist.
+func (h *TunnelHandler) Resync(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	t, ok := h.tunnelMgr.Get(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "tunnel not found"})
+		return
+	}
+
+	event := models.WSEvent{Type: "agent.request_snapshot"}
+	if err := h.hub.Send(t.AgentID, event); err != nil {
+		slog.Warn("resync: agent WS not connected", "agent_id", t.AgentID, "tunnel_id", id, "error", err)
+		writeJSON(w, http.StatusAccepted, map[string]string{
+			"status": "queued",
+			"note":   "agent WS not connected; snapshot will arrive when agent reconnects",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "requested"})
 }

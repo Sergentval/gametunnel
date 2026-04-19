@@ -1,7 +1,9 @@
 package models
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestSanitizeGREName(t *testing.T) {
@@ -71,6 +73,113 @@ func TestSanitizeGRENameNeverExceeds15(t *testing.T) {
 		got := SanitizeGREName(input)
 		if len(got) > 15 {
 			t.Errorf("SanitizeGREName(%q) = %q exceeds 15 chars (len=%d)", input, got, len(got))
+		}
+	}
+}
+
+func TestGateStateConstants(t *testing.T) {
+	cases := []struct {
+		s    GateState
+		want string
+	}{
+		{GateUnknown, "unknown"},
+		{GateRunning, "running"},
+		{GateStopped, "stopped"},
+		{GateSuspended, "suspended"},
+	}
+	for _, c := range cases {
+		if string(c.s) != c.want {
+			t.Errorf("%v: got %q, want %q", c.s, string(c.s), c.want)
+		}
+	}
+}
+
+func TestTunnelGateStateRoundtrip(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	uuid := "5a71b99d-bd4a-4cd1-af69-285f5067687b"
+	orig := Tunnel{
+		ID:                "abc",
+		Name:              "n",
+		Protocol:          ProtocolUDP,
+		PublicPort:        7777,
+		LocalPort:         7777,
+		AgentID:           "a",
+		Source:            TunnelSourceManual,
+		PelicanServerUUID: &uuid,
+		Status:            TunnelStatusActive,
+		CreatedAt:         now,
+		GateState:         GateRunning,
+		LastSignal:        now,
+		StaleFlag:         false,
+	}
+	b, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Tunnel
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GateState != orig.GateState {
+		t.Errorf("GateState: got %q, want %q", got.GateState, orig.GateState)
+	}
+	if !got.LastSignal.Equal(orig.LastSignal) {
+		t.Errorf("LastSignal mismatch")
+	}
+	if got.PelicanServerUUID == nil || *got.PelicanServerUUID != uuid {
+		t.Errorf("PelicanServerUUID: got %v, want %q", got.PelicanServerUUID, uuid)
+	}
+}
+
+func TestContainerStateUpdateRoundtrip(t *testing.T) {
+	orig := ContainerStateUpdate{
+		Type:       "container.state_update",
+		AgentID:    "home",
+		ServerUUID: "5a71b99d-bd4a-4cd1-af69-285f5067687b",
+		State:      "running",
+		Timestamp:  time.Now().UTC().Truncate(time.Second),
+		Cause:      "start",
+	}
+	b, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ContainerStateUpdate
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != orig {
+		t.Errorf("roundtrip mismatch: %+v vs %+v", got, orig)
+	}
+}
+
+func TestContainerSnapshotRoundtrip(t *testing.T) {
+	orig := ContainerSnapshot{
+		Type:       "container.snapshot",
+		AgentID:    "home",
+		SnapshotAt: time.Now().UTC().Truncate(time.Second),
+		Containers: []ContainerSnapshotItem{
+			{ServerUUID: "u1", State: "running", StartedAt: time.Now().UTC().Truncate(time.Second)},
+			{ServerUUID: "u2", State: "stopped"},
+		},
+	}
+	b, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got ContainerSnapshot
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != orig.Type || got.AgentID != orig.AgentID ||
+		!got.SnapshotAt.Equal(orig.SnapshotAt) ||
+		len(got.Containers) != len(orig.Containers) {
+		t.Errorf("header mismatch: %+v", got)
+	}
+	for i, want := range orig.Containers {
+		g := got.Containers[i]
+		if g.ServerUUID != want.ServerUUID || g.State != want.State || !g.StartedAt.Equal(want.StartedAt) {
+			t.Errorf("Containers[%d] mismatch: got %+v, want %+v", i, g, want)
 		}
 	}
 }
