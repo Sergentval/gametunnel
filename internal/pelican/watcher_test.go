@@ -189,22 +189,23 @@ func TestWatcher_Sync_RemoveOrphaned(t *testing.T) {
 
 // ── fakeTracker ───────────────────────────────────────────────────────────────
 
+type trackEntry struct {
+	UUID string
+	Port int
+}
+
 type fakeTracker struct {
-	tracked   []struct {
-		UUID string
-		Port int
-	}
-	untracked []string
+	tracked   []trackEntry
+	untracked []trackEntry
 }
 
 func (f *fakeTracker) Track(uuid string, port int) {
-	f.tracked = append(f.tracked, struct {
-		UUID string
-		Port int
-	}{uuid, port})
+	f.tracked = append(f.tracked, trackEntry{uuid, port})
 }
 
-func (f *fakeTracker) Untrack(uuid string) { f.untracked = append(f.untracked, uuid) }
+func (f *fakeTracker) Untrack(uuid string, port int) {
+	f.untracked = append(f.untracked, trackEntry{uuid, port})
+}
 
 func TestSync_TracksAndUntracksInGatestate(t *testing.T) {
 	mgr, _ := newTestTunnelManager()
@@ -260,8 +261,11 @@ func TestSync_TracksAndUntracksInGatestate(t *testing.T) {
 	if len(tracker.untracked) != 1 {
 		t.Fatalf("expected 1 Untrack call, got %d", len(tracker.untracked))
 	}
-	if tracker.untracked[0] != "server-uuid-1" {
-		t.Errorf("Untrack UUID: got %q, want %q", tracker.untracked[0], "server-uuid-1")
+	if tracker.untracked[0].UUID != "server-uuid-1" {
+		t.Errorf("Untrack UUID: got %q, want %q", tracker.untracked[0].UUID, "server-uuid-1")
+	}
+	if tracker.untracked[0].Port != 7777 {
+		t.Errorf("Untrack Port: got %d, want %d", tracker.untracked[0].Port, 7777)
 	}
 }
 

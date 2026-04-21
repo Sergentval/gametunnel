@@ -3,6 +3,7 @@ package gatestate
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -16,21 +17,26 @@ type PortController interface {
 	RemovePort(port int) error
 }
 
-// Manager owns the (server_uuid) → state + port map and coordinates
+// Manager owns the (server_uuid) → state + ports map and coordinates
 // transitions, debouncing, and nft-set updates.
+//
+// A single container often exposes multiple ports (e.g. a game port plus a
+// Steam query port). All ports for the same server_uuid share a single gate
+// state because they hinge on the same container's running/stopped status; a
+// gate transition applies to every port in the set simultaneously.
 type Manager struct {
 	mu        sync.Mutex
 	clock     Clock
 	debouncer *Debouncer
 	port      PortController
 	// tracked is the set of tunnels under management. The key is server_uuid;
-	// we track at most one (uuid, port) pair per tunnel source.
+	// each entry holds every port registered for that uuid.
 	tracked map[string]*trackedTunnel
 }
 
 type trackedTunnel struct {
 	uuid  string
-	port  int
+	ports map[int]struct{}
 	state models.GateState
 	// last agent-reported timestamp — exposed to callers for reconciler staleness checks
 	lastSignal time.Time
@@ -46,48 +52,75 @@ func NewManager(clock Clock, port PortController, debounceDelay time.Duration) *
 	}
 }
 
-// Track begins managing the (uuid, port) tunnel. Initial state is GateUnknown.
-// Safe to call multiple times for the same uuid — subsequent calls update the
-// port (if changed) but preserve current state and debounce timer.
+// Track begins managing the (uuid, port) tunnel.
 //
-// If the port changes for an existing uuid, the old nft entry is removed and
-// the new one added (when the tunnel is currently in GateRunning), preventing
-// the old port from remaining open as a ghost rule (Issue C).
+// New uuids start at GateUnknown. If the uuid is already tracked, the port is
+// appended to its port set — this is how multi-port containers (e.g. game port
+// + query port) get registered. Registering the same (uuid, port) twice is a
+// no-op. If the uuid is currently GateRunning when a new port is appended,
+// the new port is immediately added to the nft set so external traffic can
+// reach it without waiting for the next agent signal.
 func (m *Manager) Track(uuid string, port int) {
 	m.mu.Lock()
 	if t, ok := m.tracked[uuid]; ok {
-		if t.port == port {
+		if _, already := t.ports[port]; already {
 			m.mu.Unlock()
 			return
 		}
-		// Port changed for an existing uuid — migrate nft membership atomically.
-		oldPort := t.port
+		t.ports[port] = struct{}{}
 		wasRunning := t.state == models.GateRunning
-		t.port = port
 		m.mu.Unlock()
 		if wasRunning {
-			if err := m.port.RemovePort(oldPort); err != nil {
-				slog.Error("gatestate: remove old port on Track retarget", "uuid", uuid, "port", oldPort, "error", err)
-			}
 			if err := m.port.AddPort(port); err != nil {
-				slog.Error("gatestate: add new port on Track retarget", "uuid", uuid, "port", port, "error", err)
+				slog.Error("gatestate: add port on Track append", "uuid", uuid, "port", port, "error", err)
 			}
 		}
 		return
 	}
-	m.tracked[uuid] = &trackedTunnel{uuid: uuid, port: port, state: models.GateUnknown}
+	m.tracked[uuid] = &trackedTunnel{
+		uuid:  uuid,
+		ports: map[int]struct{}{port: {}},
+		state: models.GateUnknown,
+	}
 	m.mu.Unlock()
 }
 
 // TrackWithState is like Track but initializes the state — used by state.json
-// v2 migration (load as GateRunning).
+// v2 migration and by the server startup reconciler.
+//
+// New uuids are created with the supplied state; if the state is GateRunning
+// the port is added to the nft set. Existing uuids have the port appended to
+// their set, provided the supplied state matches the currently-tracked state
+// (a divergent per-port persisted state is a bug upstream and is surfaced as
+// an error rather than silently reconciled). Registering the same (uuid, port)
+// twice returns an error.
 func (m *Manager) TrackWithState(uuid string, port int, state models.GateState) error {
 	m.mu.Lock()
-	if _, ok := m.tracked[uuid]; ok {
+	t, ok := m.tracked[uuid]
+	if !ok {
+		m.tracked[uuid] = &trackedTunnel{
+			uuid:  uuid,
+			ports: map[int]struct{}{port: {}},
+			state: state,
+		}
+		shouldAdd := state == models.GateRunning
 		m.mu.Unlock()
-		return fmt.Errorf("uuid %q already tracked", uuid)
+		if shouldAdd {
+			return m.port.AddPort(port)
+		}
+		return nil
 	}
-	m.tracked[uuid] = &trackedTunnel{uuid: uuid, port: port, state: state}
+	if _, already := t.ports[port]; already {
+		m.mu.Unlock()
+		return fmt.Errorf("uuid %q port %d already tracked", uuid, port)
+	}
+	if t.state != state {
+		existing := t.state
+		m.mu.Unlock()
+		return fmt.Errorf("uuid %q: cannot seed port %d with state %q, uuid already tracked with state %q",
+			uuid, port, state, existing)
+	}
+	t.ports[port] = struct{}{}
 	shouldAdd := state == models.GateRunning
 	m.mu.Unlock()
 	if shouldAdd {
@@ -96,19 +129,27 @@ func (m *Manager) TrackWithState(uuid string, port int, state models.GateState) 
 	return nil
 }
 
-// Untrack removes the tunnel from management. If its current state has the
-// port in the nft set, it is removed.
-func (m *Manager) Untrack(uuid string) {
+// Untrack removes (uuid, port) from management. If port is the last one for
+// the uuid, the uuid entry is deleted and any pending debounce cancelled.
+// A currently-open nft rule for the port is removed.
+func (m *Manager) Untrack(uuid string, port int) {
 	m.mu.Lock()
 	t, ok := m.tracked[uuid]
 	if !ok {
 		m.mu.Unlock()
 		return
 	}
-	delete(m.tracked, uuid)
-	port := t.port
+	if _, has := t.ports[port]; !has {
+		m.mu.Unlock()
+		return
+	}
+	delete(t.ports, port)
 	wasRunning := t.state == models.GateRunning
-	m.debouncer.Cancel(uuid)
+	empty := len(t.ports) == 0
+	if empty {
+		delete(m.tracked, uuid)
+		m.debouncer.Cancel(uuid)
+	}
 	m.mu.Unlock()
 	if wasRunning {
 		if err := m.port.RemovePort(port); err != nil {
@@ -154,18 +195,27 @@ func (m *Manager) apply(uuid string, e Event, ts time.Time) {
 	if e.Kind == EvStateUpdate {
 		t.lastSignal = ts
 	}
-	port := t.port
+	ports := make([]int, 0, len(t.ports))
+	for p := range t.ports {
+		ports = append(ports, p)
+	}
 	m.mu.Unlock()
+	// Sort for deterministic ordering in tests and logs.
+	sort.Ints(ports)
 
 	switch effect {
 	case EffectAddPort:
-		if err := m.port.AddPort(port); err != nil {
-			slog.Error("gatestate: add port failed", "uuid", uuid, "port", port, "error", err)
+		for _, port := range ports {
+			if err := m.port.AddPort(port); err != nil {
+				slog.Error("gatestate: add port failed", "uuid", uuid, "port", port, "error", err)
+			}
 		}
 		m.debouncer.Cancel(uuid) // a prior stop-debounce, if any, is moot
 	case EffectRemovePort:
-		if err := m.port.RemovePort(port); err != nil {
-			slog.Error("gatestate: remove port failed", "uuid", uuid, "port", port, "error", err)
+		for _, port := range ports {
+			if err := m.port.RemovePort(port); err != nil {
+				slog.Error("gatestate: remove port failed", "uuid", uuid, "port", port, "error", err)
+			}
 		}
 		m.debouncer.Cancel(uuid)
 	case EffectArmDebounce:

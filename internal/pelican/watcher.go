@@ -25,9 +25,13 @@ type PelicanAPI interface {
 
 // GatestateTracker is the subset of gatestate.Manager the watcher uses.
 // Defined as an interface so the pelican package doesn't depend on gatestate.
+//
+// Track and Untrack are per-(uuid, port) pairs: a single container may expose
+// multiple allocated ports (e.g. a game port and a Steam query port), and each
+// port transition through the watcher is independent.
 type GatestateTracker interface {
 	Track(uuid string, port int)
-	Untrack(uuid string)
+	Untrack(uuid string, port int)
 }
 
 // WatcherConfig holds configuration for the Pelican watcher.
@@ -175,7 +179,7 @@ func (w *Watcher) Sync() error {
 	for port, t := range existing {
 		if _, stillAssigned := assignedPorts[port]; !stillAssigned {
 			if w.config.GatestateTracker != nil && t.PelicanServerUUID != nil {
-				w.config.GatestateTracker.Untrack(*t.PelicanServerUUID)
+				w.config.GatestateTracker.Untrack(*t.PelicanServerUUID, port)
 			}
 			if err := w.tunnelMgr.Delete(t.ID); err != nil {
 				slog.Error("pelican watcher: delete orphaned tunnel", "tunnel_id", t.ID, "port", port, "error", err)
