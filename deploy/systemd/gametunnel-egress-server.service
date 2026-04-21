@@ -2,6 +2,11 @@
 Description=GameTunnel egress NAT (VPS side — game traffic forwarding + outbound MASQUERADE)
 After=gametunnel-server.service
 Requires=gametunnel-server.service
+# PartOf makes systemctl restart gametunnel-server cascade to this unit too.
+# Without it, a GT server binary upgrade (systemctl restart gametunnel-server)
+# stops egress (via Requires=) but never restarts it — silently dropping the
+# MASQUERADE rule and breaking all container→Internet egress through the tunnel.
+PartOf=gametunnel-server.service
 
 # Adjust these to match your environment:
 #   PUBLIC_IFACE — VPS public interface (typically ens3, eth0, etc.)
