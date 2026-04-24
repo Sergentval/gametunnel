@@ -330,40 +330,50 @@ func serverRun(args []string) {
 		}
 	}()
 
-	// ── Pelican watcher goroutine ────────────────────────────────────────────
+	// ── Pelican watcher goroutines (one per binding) ─────────────────────────
 	if cfg.Pelican.Enabled {
 		pelicanClient := pelican.NewPelicanClient(cfg.Pelican.PanelURL, cfg.Pelican.APIKey)
+		interval := time.Duration(cfg.Pelican.PollIntervalSeconds) * time.Second
 
-		watcherCfg := pelican.WatcherConfig{
-			NodeID:           cfg.Pelican.NodeID,
-			DefaultAgentID:   cfg.Pelican.DefaultAgentID,
-			AgentRegistry:    registry,
-			DefaultProto:     cfg.Pelican.DefaultProtocol,
-			PortProtocols:    cfg.Pelican.PortProtocols,
-			GatestateTracker: gatestateMgr, // nil when ContainerGatedTunnels is off — watcher checks
-		}
-		watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr, store)
+		for _, binding := range cfg.Pelican.Bindings {
+			binding := binding // pin loop var for goroutine closure
 
-		go func() {
-			slog.Info("Pelican watcher started", "node_id", cfg.Pelican.NodeID, "interval_seconds", cfg.Pelican.PollIntervalSeconds)
-
-			if err := watcher.Sync(); err != nil {
-				slog.Error("Pelican watcher initial sync", "error", err)
+			watcherCfg := pelican.WatcherConfig{
+				NodeID:           binding.NodeID,
+				DefaultAgentID:   binding.AgentID,
+				AgentRegistry:    registry,
+				DefaultProto:     cfg.Pelican.DefaultProtocol,
+				PortProtocols:    cfg.Pelican.PortProtocols,
+				GatestateTracker: gatestateMgr, // nil when ContainerGatedTunnels is off — watcher checks
 			}
+			watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr, store)
 
-			ticker := time.NewTicker(time.Duration(cfg.Pelican.PollIntervalSeconds) * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if err := watcher.Sync(); err != nil {
-						slog.Error("Pelican watcher sync", "error", err)
+			go func() {
+				slog.Info("Pelican watcher started",
+					"node_id", binding.NodeID,
+					"agent_id", binding.AgentID,
+					"interval_seconds", cfg.Pelican.PollIntervalSeconds)
+
+				if err := watcher.Sync(); err != nil {
+					slog.Error("Pelican watcher initial sync",
+						"node_id", binding.NodeID, "error", err)
+				}
+
+				ticker := time.NewTicker(interval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if err := watcher.Sync(); err != nil {
+							slog.Error("Pelican watcher sync",
+								"node_id", binding.NodeID, "error", err)
+						}
 					}
 				}
-			}
-		}()
+			}()
+		}
 	}
 
 	// ── Start serving ────────────────────────────────────────────────────────
