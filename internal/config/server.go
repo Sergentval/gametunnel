@@ -80,20 +80,36 @@ func (s SecuritySettings) IsEnabled() bool {
 	return *s.Enabled
 }
 
+// PelicanBinding associates a Pelican node with the agent that serves it.
+// A server can have multiple bindings to support multi-home deployments.
+type PelicanBinding struct {
+	NodeID  int    `yaml:"node_id"`
+	AgentID string `yaml:"agent_id"`
+}
+
 // PelicanSettings holds configuration for the optional Pelican panel integration.
 type PelicanSettings struct {
-	Enabled             bool              `yaml:"enabled"`
-	PanelURL            string            `yaml:"panel_url"`
-	APIKey              string            `yaml:"api_key"`
-	NodeID              int               `yaml:"node_id"`
-	DefaultAgentID      string            `yaml:"default_agent_id"`
-	SyncMode            string            `yaml:"sync_mode"`
-	PollIntervalSeconds int               `yaml:"poll_interval_seconds"`
-	DefaultProtocol     string            `yaml:"default_protocol"`
-	PortProtocols       map[int]string    `yaml:"port_protocols"`
+	Enabled  bool   `yaml:"enabled"`
+	PanelURL string `yaml:"panel_url"`
+	APIKey   string `yaml:"api_key"`
+
+	// Bindings lists each Pelican node and the agent that handles it.
+	// Preferred shape. When empty, falls back to the deprecated single-node
+	// form (NodeID + DefaultAgentID) via applyDefaults.
+	Bindings []PelicanBinding `yaml:"bindings,omitempty"`
+
+	// Deprecated: use Bindings. Kept for back-compat — migrated into a
+	// single-element Bindings by applyDefaults when Bindings is empty.
+	NodeID         int    `yaml:"node_id,omitempty"`
+	DefaultAgentID string `yaml:"default_agent_id,omitempty"`
+
+	SyncMode            string         `yaml:"sync_mode"`
+	PollIntervalSeconds int            `yaml:"poll_interval_seconds"`
+	DefaultProtocol     string         `yaml:"default_protocol"`
+	PortProtocols       map[int]string `yaml:"port_protocols"`
 	// ContainerGatedTunnels gates tunnel nft-set membership on container running state.
 	// When false (default), legacy behavior: allocation assigned → port in nft set.
-	ContainerGatedTunnels bool              `yaml:"container_gated_tunnels"`
+	ContainerGatedTunnels bool `yaml:"container_gated_tunnels"`
 }
 
 // ServerConfig is the top-level configuration for the tunnel server.
@@ -138,6 +154,14 @@ func (c *ServerConfig) applyDefaults() {
 	if c.Pelican.DefaultProtocol == "" {
 		c.Pelican.DefaultProtocol = "udp"
 	}
+	// Back-compat: migrate legacy pelican.node_id + pelican.default_agent_id
+	// into the Bindings list. New-shape config (non-empty Bindings) wins —
+	// legacy fields are ignored when Bindings is already populated.
+	if len(c.Pelican.Bindings) == 0 && c.Pelican.NodeID != 0 && c.Pelican.DefaultAgentID != "" {
+		c.Pelican.Bindings = []PelicanBinding{
+			{NodeID: c.Pelican.NodeID, AgentID: c.Pelican.DefaultAgentID},
+		}
+	}
 	// Security defaults. Enabled uses a pointer so an omitted key defaults
 	// to true (see SecuritySettings.IsEnabled) — no default needs to be
 	// set on the pointer itself.
@@ -166,6 +190,27 @@ func (c *ServerConfig) validate() error {
 		}
 		if a.Token == "" {
 			return fmt.Errorf("agents[%d].token is required", i)
+		}
+	}
+	// Validate Pelican bindings (only when pelican is enabled): each
+	// agent_id must exist in c.Agents, and each node_id may appear at
+	// most once.
+	if c.Pelican.Enabled {
+		seenNode := make(map[int]bool, len(c.Pelican.Bindings))
+		for i, b := range c.Pelican.Bindings {
+			if b.AgentID == "" {
+				return fmt.Errorf("pelican.bindings[%d].agent_id is required", i)
+			}
+			if b.NodeID == 0 {
+				return fmt.Errorf("pelican.bindings[%d].node_id is required", i)
+			}
+			if c.AgentByID(b.AgentID) == nil {
+				return fmt.Errorf("pelican.bindings[%d].agent_id %q not found in agents", i, b.AgentID)
+			}
+			if seenNode[b.NodeID] {
+				return fmt.Errorf("pelican.bindings: node_id %d appears more than once", b.NodeID)
+			}
+			seenNode[b.NodeID] = true
 		}
 	}
 	return nil
