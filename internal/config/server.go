@@ -154,6 +154,14 @@ func (c *ServerConfig) applyDefaults() {
 	if c.Pelican.DefaultProtocol == "" {
 		c.Pelican.DefaultProtocol = "udp"
 	}
+	// Back-compat: migrate legacy pelican.node_id + pelican.default_agent_id
+	// into the Bindings list. New-shape config (non-empty Bindings) wins —
+	// legacy fields are ignored when Bindings is already populated.
+	if len(c.Pelican.Bindings) == 0 && c.Pelican.NodeID != 0 && c.Pelican.DefaultAgentID != "" {
+		c.Pelican.Bindings = []PelicanBinding{
+			{NodeID: c.Pelican.NodeID, AgentID: c.Pelican.DefaultAgentID},
+		}
+	}
 	// Security defaults. Enabled uses a pointer so an omitted key defaults
 	// to true (see SecuritySettings.IsEnabled) — no default needs to be
 	// set on the pointer itself.
@@ -182,6 +190,27 @@ func (c *ServerConfig) validate() error {
 		}
 		if a.Token == "" {
 			return fmt.Errorf("agents[%d].token is required", i)
+		}
+	}
+	// Validate Pelican bindings (only when pelican is enabled): each
+	// agent_id must exist in c.Agents, and each node_id may appear at
+	// most once.
+	if c.Pelican.Enabled {
+		seenNode := make(map[int]bool, len(c.Pelican.Bindings))
+		for i, b := range c.Pelican.Bindings {
+			if b.AgentID == "" {
+				return fmt.Errorf("pelican.bindings[%d].agent_id is required", i)
+			}
+			if b.NodeID == 0 {
+				return fmt.Errorf("pelican.bindings[%d].node_id is required", i)
+			}
+			if c.AgentByID(b.AgentID) == nil {
+				return fmt.Errorf("pelican.bindings[%d].agent_id %q not found in agents", i, b.AgentID)
+			}
+			if seenNode[b.NodeID] {
+				return fmt.Errorf("pelican.bindings: node_id %d appears more than once", b.NodeID)
+			}
+			seenNode[b.NodeID] = true
 		}
 	}
 	return nil
