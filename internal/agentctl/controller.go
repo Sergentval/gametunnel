@@ -220,6 +220,14 @@ func (c *Controller) runWebSocket() error {
 
 	slog.Info("websocket connected")
 
+	// Nudge WireGuard to handshake. If the server restarted while the agent
+	// was connected, the VPS-side peer state is wiped; the kernel on this
+	// side will not initiate a new handshake until its own sporadic retry
+	// fires (5–90s), so the data plane stays dead long after the WS control
+	// plane is back. A single UDP datagram to the server's WG address forces
+	// the handshake within one RTT. See nudgeWGHandshake for details.
+	c.nudgeWGHandshake()
+
 	// Expose a JSON-send closure to handleWSEvent for on-demand snapshots.
 	sendFn := func(payload []byte) error {
 		return writeMessage(websocket.TextMessage, payload)
@@ -295,6 +303,41 @@ func (c *Controller) runWebSocket() error {
 			c.heartbeatAndSync()
 		}
 	}
+}
+
+// nudgeWGHandshake sends a single UDP datagram to the server's WireGuard
+// address to force the kernel to initiate a fresh WireGuard handshake.
+//
+// Why this exists: `gametunnel-server` restarts (binary upgrade, config
+// reload) wipe the VPS-side WireGuard peer state. WireGuard negotiates
+// handshakes only in response to traffic to a peer, so with no traffic to
+// send the kernel relies on its own slow retry schedule (up to ~90s backoff)
+// to retry. The WS control plane reconnects within seconds, but the data
+// plane — which carries source-IP-preserved game traffic — stays dead until
+// then. Sending any outbound packet destined to the peer's tunnel address
+// here triggers a new handshake within one RTT.
+//
+// The destination port is irrelevant: the VPS discards the packet. The only
+// observable side-effect is the kernel handshake that results. Errors are
+// logged at debug level; a failure here is strictly cosmetic — WireGuard's
+// own retry will eventually recover.
+func (c *Controller) nudgeWGHandshake() {
+	if c.serverIP == nil {
+		return
+	}
+	addr := &net.UDPAddr{IP: c.serverIP, Port: 9} // RFC 863 discard
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		slog.Debug("wg handshake nudge: dial failed", "server_ip", c.serverIP, "error", err)
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	if _, err := conn.Write([]byte{0}); err != nil {
+		slog.Debug("wg handshake nudge: write failed", "server_ip", c.serverIP, "error", err)
+		return
+	}
+	slog.Debug("wg handshake nudge sent", "server_ip", c.serverIP)
 }
 
 // handleWSEvent processes a single WebSocket event from the server.
