@@ -87,13 +87,29 @@ func (m *netlinkManager) RemoveSourceRule(table int, srcNet *net.IPNet) error {
 	return nil
 }
 
-// EnsureTPROXYRouting installs the ip rule (fwmark/mask → table, priority 100)
+// EnsureTPROXYRouting installs the ip rule (fwmark/mark → table, priority 100)
 // and moves the local routing table from priority 0 to priority 150 so that
 // marked packets hit the fwmark rule first and are forwarded through the
 // WireGuard tunnel instead of being consumed locally. Idempotent.
+//
+// This is the legacy single-mark form: mask defaults to mark. Use
+// EnsureTPROXYRoutingMasked when you need an explicit mask (e.g.
+// multi-agent mode where multiple marks share a 0xF0 mask region).
 func EnsureTPROXYRouting(mark int, table int) error {
-	// ip rule: fwmark <mark>/<mark> lookup <table> priority 100
-	maskVal := uint32(mark)
+	return EnsureTPROXYRoutingMasked(mark, mark, table)
+}
+
+// EnsureTPROXYRoutingMasked installs an ip rule that matches packets where
+// (skb_mark & mask) == mark and dispatches them to the given routing table
+// at priority 100. It also moves the local routing table from priority 0
+// to priority 150 (idempotent — safe to call repeatedly across agents).
+//
+// In multi-agent mode this is called once per agent with that agent's
+// fwmark + mask + table. The local-table priority shuffle is a global
+// concern — repeated calls just delete-then-add each time, no harm done.
+func EnsureTPROXYRoutingMasked(mark, mask, table int) error {
+	// ip rule: fwmark <mark>/<mask> lookup <table> priority 100
+	maskVal := uint32(mask)
 	rule := netlink.NewRule()
 	rule.Mark = uint32(mark)
 	rule.Mask = &maskVal
@@ -101,10 +117,12 @@ func EnsureTPROXYRouting(mark int, table int) error {
 	rule.Priority = 100
 
 	if err := netlink.RuleDel(rule); err != nil && !isNotExist(err) {
-		return fmt.Errorf("remove stale fwmark rule (mark=%d table=%d): %w", mark, table, err)
+		return fmt.Errorf("remove stale fwmark rule (mark=0x%x mask=0x%x table=%d): %w",
+			mark, mask, table, err)
 	}
 	if err := netlink.RuleAdd(rule); err != nil {
-		return fmt.Errorf("add fwmark rule (mark=%d table=%d): %w", mark, table, err)
+		return fmt.Errorf("add fwmark rule (mark=0x%x mask=0x%x table=%d): %w",
+			mark, mask, table, err)
 	}
 
 	// Move the local table: add at priority 150 first, then delete priority 0.
@@ -132,8 +150,14 @@ func EnsureTPROXYRouting(mark int, table int) error {
 // CleanupTPROXYRouting removes the fwmark rule and restores the local routing
 // table to its default priority 0. Errors are ignored for best-effort cleanup.
 func CleanupTPROXYRouting(mark int, table int) error {
-	// Remove the fwmark rule.
-	maskVal := uint32(mark)
+	return CleanupTPROXYRoutingMasked(mark, mark, table)
+}
+
+// CleanupTPROXYRoutingMasked removes the masked fwmark rule. Best-effort —
+// errors are swallowed because cleanup is invoked on shutdown paths where
+// nothing useful can be done with a partial-failure error.
+func CleanupTPROXYRoutingMasked(mark, mask, table int) error {
+	maskVal := uint32(mask)
 	rule := netlink.NewRule()
 	rule.Mark = uint32(mark)
 	rule.Mask = &maskVal

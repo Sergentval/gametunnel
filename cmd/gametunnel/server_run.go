@@ -19,6 +19,7 @@ import (
 	"github.com/Sergentval/gametunnel/internal/config"
 	"github.com/Sergentval/gametunnel/internal/gatestate"
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/multiagent"
 	"github.com/Sergentval/gametunnel/internal/netutil"
 	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/pelican"
@@ -72,45 +73,99 @@ func serverRun(args []string) {
 		}
 	}()
 
-	// Derive server IP: first address in the WireGuard subnet (.1).
-	serverIP, err := subnetFirstIP(cfg.WireGuard.Subnet)
-	if err != nil {
-		slog.Error("derive server IP from subnet", "subnet", cfg.WireGuard.Subnet, "error", err)
-		os.Exit(1)
-	}
-	serverIPWithMask := fmt.Sprintf("%s/%d", serverIP.String(), subnetPrefixLen(cfg.WireGuard.Subnet))
-
 	// WireGuard FwMark: a unique mark applied to WG's own UDP transport packets
 	// so that a policy routing rule can send them via the main table (normal
 	// internet routing) instead of the game-traffic table. This prevents a
 	// routing loop (game fwmark → table 100 → wg-gt → WG UDP → fwmark → loop).
 	const wgFwMark = 0x51820
 
-	if err := wgMgr.Setup(
-		cfg.WireGuard.Interface,
-		cfg.WireGuard.PrivateKey,
-		cfg.WireGuard.ListenPort,
-		serverIPWithMask,
-		wgFwMark,
-	); err != nil {
-		slog.Error("setup wireguard interface", "error", err)
-		os.Exit(1)
-	}
+	// Per-agent layouts (multi-agent mode). Empty in legacy mode.
+	var layouts map[string]multiagent.Layout
 
-	// ── TPROXY routing ──────────────────────────────────────────────────────
-	mark, err := parseMark(cfg.TProxy.Mark)
-	if err != nil {
-		slog.Error("parse tproxy mark", "mark", cfg.TProxy.Mark, "error", err)
-		os.Exit(1)
-	}
+	// serverIP is used by tunnel.Manager as the local-IP-for-routing source.
+	// In legacy mode it's the .1 of the base subnet. In multi-agent mode
+	// we use agent 0's ServerIP (still a valid local address) for the
+	// per-agent flow it ends up paired with via AgentResolver.
+	var serverIP net.IP
 
-	if err := routing.EnsureTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
-		slog.Error("ensure tproxy routing", "error", err)
-		os.Exit(1)
+	if cfg.MultiAgentEnabled {
+		layouts = make(map[string]multiagent.Layout, len(cfg.Agents))
+		for i, a := range cfg.Agents {
+			l, err := multiagent.Compute(a.ID, i, cfg.WireGuard.Subnet, cfg.WireGuard.ListenPort, "wg-")
+			if err != nil {
+				slog.Error("compute multi-agent layout", "agent_id", a.ID, "error", err)
+				os.Exit(1)
+			}
+			layouts[a.ID] = l
+
+			// Bring up wg-<agent> on its own listen port + /30.
+			ipWithMask := fmt.Sprintf("%s/30", l.ServerIP.String())
+			if err := wgMgr.Setup(
+				l.Interface,
+				cfg.WireGuard.PrivateKey,
+				l.ListenPort,
+				ipWithMask,
+				wgFwMark,
+			); err != nil {
+				slog.Error("setup per-agent WG interface",
+					"agent_id", a.ID, "iface", l.Interface, "error", err)
+				os.Exit(1)
+			}
+
+			// Per-agent TPROXY policy rule: fwmark <agent_mark>/<agent_mask> → table.
+			if err := routing.EnsureTPROXYRoutingMasked(int(l.FwMark), int(l.FwMarkMask), l.RoutingTable); err != nil {
+				slog.Error("ensure per-agent tproxy routing",
+					"agent_id", a.ID, "mark", l.FwMark, "table", l.RoutingTable, "error", err)
+				os.Exit(1)
+			}
+
+			slog.Info("multi-agent: per-agent setup complete",
+				"agent_id", a.ID,
+				"iface", l.Interface,
+				"listen_port", l.ListenPort,
+				"subnet", l.Subnet.String(),
+				"server_ip", l.ServerIP.String(),
+				"fwmark", fmt.Sprintf("0x%x/0x%x", l.FwMark, l.FwMarkMask),
+				"table", l.RoutingTable)
+		}
+		// Use agent 0's ServerIP as the global serverIP for tunnel.Manager.
+		// Per-agent values are supplied via AgentResolver at tunnel-create time.
+		serverIP = layouts[cfg.Agents[0].ID].ServerIP
+	} else {
+		// Legacy single-WG path: one interface, one mark, one table.
+		var err error
+		serverIP, err = subnetFirstIP(cfg.WireGuard.Subnet)
+		if err != nil {
+			slog.Error("derive server IP from subnet", "subnet", cfg.WireGuard.Subnet, "error", err)
+			os.Exit(1)
+		}
+		serverIPWithMask := fmt.Sprintf("%s/%d", serverIP.String(), subnetPrefixLen(cfg.WireGuard.Subnet))
+
+		if err := wgMgr.Setup(
+			cfg.WireGuard.Interface,
+			cfg.WireGuard.PrivateKey,
+			cfg.WireGuard.ListenPort,
+			serverIPWithMask,
+			wgFwMark,
+		); err != nil {
+			slog.Error("setup wireguard interface", "error", err)
+			os.Exit(1)
+		}
+
+		mark, err := parseMark(cfg.TProxy.Mark)
+		if err != nil {
+			slog.Error("parse tproxy mark", "mark", cfg.TProxy.Mark, "error", err)
+			os.Exit(1)
+		}
+		if err := routing.EnsureTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
+			slog.Error("ensure tproxy routing", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Add a policy routing rule so WireGuard's own UDP transport packets
 	// (marked with wgFwMark) use the main table instead of the game-traffic table.
+	// This is global (not per-agent) — same wgFwMark for every WG interface.
 	if err := routing.EnsureWGFwMarkRule(wgFwMark); err != nil {
 		slog.Error("ensure WireGuard fwmark rule", "error", err)
 		os.Exit(1)
@@ -173,6 +228,21 @@ func serverRun(args []string) {
 
 	tunnelMgr := tunnel.NewManager(tproxyMgr, routingMgr, cfg.TProxy.Mark, cfg.TProxy.RoutingTable, serverIP, cfg.WireGuard.Interface, nftFwd)
 
+	// In multi-agent mode, install the per-agent resolver so each tunnel's
+	// MARK rule, routing table, and forward route target the agent that
+	// owns it. Legacy single-agent mode leaves AgentResolver nil and
+	// keeps the fixed mark/table/iface from construction.
+	if cfg.MultiAgentEnabled {
+		layoutsCopy := layouts // pin
+		tunnelMgr.AgentResolver = func(agentID string) (string, int, string, bool) {
+			l, ok := layoutsCopy[agentID]
+			if !ok {
+				return "", 0, "", false
+			}
+			return fmt.Sprintf("0x%x", l.FwMark), l.RoutingTable, l.Interface, true
+		}
+	}
+
 	// Container-state-gated tunnels (feature-flagged).
 	// When enabled, tunnel.Manager.Create() does not add the port to nft directly;
 	// gatestate.Manager decides based on agent-reported container state.
@@ -204,12 +274,21 @@ func serverRun(args []string) {
 	if publicIP == "" {
 		publicIP = "127.0.0.1"
 	}
-	serverEndpoint := fmt.Sprintf("%s:%d", publicIP, cfg.WireGuard.ListenPort)
 
-	registry, err := agent.NewRegistry(wgMgr, cfg.WireGuard.Interface, cfg.WireGuard.Subnet, serverEndpoint, cfg.WireGuard.KeepaliveSeconds)
-	if err != nil {
-		slog.Error("init agent registry", "error", err)
-		os.Exit(1)
+	var registry *agent.Registry
+	if cfg.MultiAgentEnabled {
+		registry, err = agent.NewMultiAgentRegistry(wgMgr, layouts, publicIP, cfg.WireGuard.KeepaliveSeconds)
+		if err != nil {
+			slog.Error("init multi-agent registry", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		serverEndpoint := fmt.Sprintf("%s:%d", publicIP, cfg.WireGuard.ListenPort)
+		registry, err = agent.NewRegistry(wgMgr, cfg.WireGuard.Interface, cfg.WireGuard.Subnet, serverEndpoint, cfg.WireGuard.KeepaliveSeconds)
+		if err != nil {
+			slog.Error("init agent registry", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// ── Restore persisted state ─────────────────────────────────────────────
@@ -404,14 +483,24 @@ func serverRun(args []string) {
 		slog.Warn("graceful shutdown", "error", err)
 	}
 
-	if err := routing.CleanupTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
-		slog.Warn("cleanup tproxy routing", "error", err)
+	if cfg.MultiAgentEnabled {
+		for _, l := range layouts {
+			_ = routing.CleanupTPROXYRoutingMasked(int(l.FwMark), int(l.FwMarkMask), l.RoutingTable)
+			_ = routing.CleanupForwardRules(l.Interface, nftFwd)
+			_ = routing.CleanupForwardRoute(l.RoutingTable)
+		}
+	} else {
+		if mark, err := parseMark(cfg.TProxy.Mark); err == nil {
+			if err := routing.CleanupTPROXYRouting(mark, cfg.TProxy.RoutingTable); err != nil {
+				slog.Warn("cleanup tproxy routing", "error", err)
+			}
+		}
+		_ = routing.CleanupForwardRules(cfg.WireGuard.Interface, nftFwd)
+		_ = routing.CleanupForwardRoute(cfg.TProxy.RoutingTable)
 	}
 	if err := routing.CleanupWGFwMarkRule(wgFwMark); err != nil {
 		slog.Warn("cleanup WireGuard fwmark rule", "error", err)
 	}
-	_ = routing.CleanupForwardRules(cfg.WireGuard.Interface, nftFwd)
-	_ = routing.CleanupForwardRoute(cfg.TProxy.RoutingTable)
 
 	if secMgr != nil {
 		if err := secMgr.Cleanup(); err != nil {

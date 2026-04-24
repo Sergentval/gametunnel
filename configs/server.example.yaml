@@ -1,6 +1,18 @@
 # GameTunnel Server Configuration Example
 # Copy to server.yaml and edit before running.
 
+# Multi-agent mode (experimental). When true, the server creates one
+# WireGuard interface per agent (wg-<agent-id>) with its own UDP listen
+# port (base + agent index, starting from wireguard.listen_port below)
+# and its own /30 carved from wireguard.subnet. Each agent gets a
+# dedicated fwmark and routing table, so game traffic to a specific
+# port routes to the owning agent's tunnel.
+#
+# Default: false (legacy single-wg behavior). Flip to true when you
+# need a second home agent serving game traffic. Verify the layout
+# with `gametunnel server check` before restarting the server.
+multi_agent_enabled: false
+
 server:
   # Address and port the REST API listens on.
   #
