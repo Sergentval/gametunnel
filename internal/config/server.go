@@ -80,20 +80,36 @@ func (s SecuritySettings) IsEnabled() bool {
 	return *s.Enabled
 }
 
+// PelicanBinding associates a Pelican node with the agent that serves it.
+// A server can have multiple bindings to support multi-home deployments.
+type PelicanBinding struct {
+	NodeID  int    `yaml:"node_id"`
+	AgentID string `yaml:"agent_id"`
+}
+
 // PelicanSettings holds configuration for the optional Pelican panel integration.
 type PelicanSettings struct {
-	Enabled             bool              `yaml:"enabled"`
-	PanelURL            string            `yaml:"panel_url"`
-	APIKey              string            `yaml:"api_key"`
-	NodeID              int               `yaml:"node_id"`
-	DefaultAgentID      string            `yaml:"default_agent_id"`
-	SyncMode            string            `yaml:"sync_mode"`
-	PollIntervalSeconds int               `yaml:"poll_interval_seconds"`
-	DefaultProtocol     string            `yaml:"default_protocol"`
-	PortProtocols       map[int]string    `yaml:"port_protocols"`
+	Enabled  bool   `yaml:"enabled"`
+	PanelURL string `yaml:"panel_url"`
+	APIKey   string `yaml:"api_key"`
+
+	// Bindings lists each Pelican node and the agent that handles it.
+	// Preferred shape. When empty, falls back to the deprecated single-node
+	// form (NodeID + DefaultAgentID) via applyDefaults.
+	Bindings []PelicanBinding `yaml:"bindings,omitempty"`
+
+	// Deprecated: use Bindings. Kept for back-compat — migrated into a
+	// single-element Bindings by applyDefaults when Bindings is empty.
+	NodeID         int    `yaml:"node_id,omitempty"`
+	DefaultAgentID string `yaml:"default_agent_id,omitempty"`
+
+	SyncMode            string         `yaml:"sync_mode"`
+	PollIntervalSeconds int            `yaml:"poll_interval_seconds"`
+	DefaultProtocol     string         `yaml:"default_protocol"`
+	PortProtocols       map[int]string `yaml:"port_protocols"`
 	// ContainerGatedTunnels gates tunnel nft-set membership on container running state.
 	// When false (default), legacy behavior: allocation assigned → port in nft set.
-	ContainerGatedTunnels bool              `yaml:"container_gated_tunnels"`
+	ContainerGatedTunnels bool `yaml:"container_gated_tunnels"`
 }
 
 // ServerConfig is the top-level configuration for the tunnel server.
