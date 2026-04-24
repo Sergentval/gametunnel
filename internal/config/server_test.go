@@ -501,6 +501,33 @@ pelican:
 	}
 }
 
+func TestServerExampleYAMLParses(t *testing.T) {
+	// Ensure configs/server.example.yaml stays a valid config. Operators
+	// copy this file as a starting point, so parsing regressions would
+	// silently poison every new deployment.
+	data, err := os.ReadFile(filepath.Join("..", "..", "configs", "server.example.yaml"))
+	if err != nil {
+		t.Fatalf("read example: %v", err)
+	}
+	patched := string(data)
+	patched = strings.Replace(patched, "REPLACE_WITH_SERVER_PRIVATE_KEY", "cHJpdmF0ZWtleWhlcmUK", 1)
+	patched = strings.Replace(patched, "REPLACE_WITH_PELICAN_API_KEY", "placeholder_key", 1)
+	// Flip pelican.enabled to true so bindings validation runs against the example.
+	patched = strings.Replace(patched, "enabled: false", "enabled: true", 1)
+
+	path := filepath.Join(t.TempDir(), "example.yaml")
+	if err := os.WriteFile(path, []byte(patched), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServerConfig(path)
+	if err != nil {
+		t.Fatalf("example should parse: %v", err)
+	}
+	if len(cfg.Pelican.Bindings) == 0 {
+		t.Error("example should advertise bindings as the preferred shape")
+	}
+}
+
 func TestLoadServerConfig_PelicanBindings_DisabledSkipsValidation(t *testing.T) {
 	// When pelican.enabled is false, we should not block on bindings issues —
 	// operators commonly leave stale pelican config while disabled.

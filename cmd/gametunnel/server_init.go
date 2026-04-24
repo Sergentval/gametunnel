@@ -66,6 +66,11 @@ func serverInit(args []string) {
 		cfg.Pelican.Enabled = true
 		cfg.Pelican.PanelURL = *pelicanURL
 		cfg.Pelican.APIKey = *pelicanKey
+		// Writes to the deprecated pelican.node_id field; applyDefaults
+		// migrates it into Bindings[0] on next load. Init runs before
+		// agents are registered, so we do not yet know which agent ID to
+		// pair the node with here — operators edit the generated file to
+		// add `bindings:` when they wire in a specific agent.
 		cfg.Pelican.NodeID = *pelicanNode
 	}
 

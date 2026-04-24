@@ -62,10 +62,22 @@ pelican:
   panel_url: "https://panel.example.com"
   # Pelican application API key.
   api_key: "REPLACE_WITH_PELICAN_API_KEY"
-  # Pelican node ID that this server manages allocations for.
-  node_id: 1
-  # Default agent ID to assign Pelican-created tunnels to.
-  default_agent_id: "game-node-1"
+
+  # Preferred: one entry per Pelican node this server forwards for.
+  # Each binding pairs a Pelican node_id with the registered agent_id
+  # (see the `agents:` block above) that hosts its containers.
+  bindings:
+    - node_id: 1
+      agent_id: "game-node-1"
+    # Add more bindings for multi-home deployments:
+    # - node_id: 2
+    #   agent_id: "game-node-2"
+
+  # Deprecated single-node shape — migrated into bindings[0] on load.
+  # Leave commented unless you are running pre-multi-agent gametunnel.
+  # node_id: 1
+  # default_agent_id: "game-node-1"
+
   # How to sync: "polling" (periodic) or "webhook" (Pelican pushes changes).
   sync_mode: "polling"
   # How often to poll Pelican for allocation changes (seconds). Only used with polling.
