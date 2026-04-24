@@ -31,6 +31,9 @@ func serverCheck(args []string) {
 	fmt.Printf("  Pelican:      %v\n", cfg.Pelican.Enabled)
 	if cfg.Pelican.Enabled {
 		fmt.Printf("    Panel URL:  %s\n", cfg.Pelican.PanelURL)
-		fmt.Printf("    Node ID:    %d\n", cfg.Pelican.NodeID)
+		fmt.Printf("    Bindings:   %d\n", len(cfg.Pelican.Bindings))
+		for i, b := range cfg.Pelican.Bindings {
+			fmt.Printf("      [%d] node_id=%d agent_id=%s\n", i, b.NodeID, b.AgentID)
+		}
 	}
 }
