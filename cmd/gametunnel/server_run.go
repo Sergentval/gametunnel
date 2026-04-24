@@ -133,7 +133,7 @@ func serverRun(args []string) {
 	// ── MARK + routing managers ────────────────────────────────────────────
 	routingMgr := routing.NewManager()
 
-	tproxyMgr, err := tproxy.NewManager(nftConn, cfg.TProxy.Mark)
+	tproxyMgr, err := tproxy.NewManager(nftConn)
 	if err != nil {
 		slog.Error("init tproxy manager", "error", err)
 		os.Exit(1)
