@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -540,5 +541,135 @@ pelican:
 `
 	if _, err := LoadServerConfig(writeTemp(t, y)); err != nil {
 		t.Errorf("disabled pelican should skip bindings validation: %v", err)
+	}
+}
+
+// ── Multi-agent feature flag + index (plan 2) ────────────────────────────────
+
+func TestMultiAgentEnabled_DefaultFalse(t *testing.T) {
+	cfg, err := LoadServerConfig(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.MultiAgentEnabled {
+		t.Error("MultiAgentEnabled should default to false")
+	}
+}
+
+func TestMultiAgentEnabled_Parses(t *testing.T) {
+	y := `
+agents:
+  - id: "home1"
+    token: "t1"
+wireguard:
+  private_key: "cHJpdmF0ZWtleWhlcmUK"
+  subnet: "10.99.0.0/24"
+multi_agent_enabled: true
+`
+	cfg, err := LoadServerConfig(writeTemp(t, y))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.MultiAgentEnabled {
+		t.Error("MultiAgentEnabled should parse true")
+	}
+}
+
+func TestAgentIndex(t *testing.T) {
+	cfg := &ServerConfig{
+		Agents: []AgentEntry{
+			{ID: "home1", Token: "t1"},
+			{ID: "home2", Token: "t2"},
+			{ID: "home3", Token: "t3"},
+		},
+	}
+	cases := []struct {
+		id   string
+		want int
+	}{
+		{"home1", 0},
+		{"home2", 1},
+		{"home3", 2},
+		{"missing", -1},
+	}
+	for _, tc := range cases {
+		if got := cfg.AgentIndex(tc.id); got != tc.want {
+			t.Errorf("AgentIndex(%q) = %d, want %d", tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestMultiAgentEnabled_ValidateCapacity(t *testing.T) {
+	// With default 10.99.0.0/24 and /30 per agent, max 64 agents. 65 must fail.
+	var agentsBlock strings.Builder
+	for i := 0; i < 65; i++ {
+		fmt.Fprintf(&agentsBlock, "  - id: \"home%d\"\n    token: \"t%d\"\n", i, i)
+	}
+	y := fmt.Sprintf(`
+multi_agent_enabled: true
+wireguard:
+  private_key: "cHJpdmF0ZWtleWhlcmUK"
+  subnet: "10.99.0.0/24"
+agents:
+%s`, agentsBlock.String())
+	_, err := LoadServerConfig(writeTemp(t, y))
+	if err == nil {
+		t.Fatal("expected capacity validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "capacity") && !strings.Contains(err.Error(), "/30") {
+		t.Errorf("error should mention capacity or /30; got: %v", err)
+	}
+}
+
+func TestMultiAgentEnabled_AcceptsAtCapacity(t *testing.T) {
+	// Exactly 64 agents should pass validation.
+	var agentsBlock strings.Builder
+	for i := 0; i < 64; i++ {
+		fmt.Fprintf(&agentsBlock, "  - id: \"home%d\"\n    token: \"t%d\"\n", i, i)
+	}
+	y := fmt.Sprintf(`
+multi_agent_enabled: true
+wireguard:
+  private_key: "cHJpdmF0ZWtleWhlcmUK"
+  subnet: "10.99.0.0/24"
+agents:
+%s`, agentsBlock.String())
+	if _, err := LoadServerConfig(writeTemp(t, y)); err != nil {
+		t.Errorf("64 agents in /24 should pass: %v", err)
+	}
+}
+
+func TestMultiAgentEnabled_ValidateSubnetTooSmall(t *testing.T) {
+	y := `
+multi_agent_enabled: true
+wireguard:
+  private_key: "cHJpdmF0ZWtleWhlcmUK"
+  subnet: "10.99.0.0/31"
+agents:
+  - id: "home1"
+    token: "t1"
+`
+	_, err := LoadServerConfig(writeTemp(t, y))
+	if err == nil {
+		t.Fatal("expected subnet-too-small error, got nil")
+	}
+}
+
+func TestMultiAgentEnabled_FlagOff_SkipsCapacity(t *testing.T) {
+	// When the flag is off, capacity validation is irrelevant — even with
+	// an oversubscribed config, load should succeed because the legacy
+	// single-wg path doesn't need /30 slots.
+	var agentsBlock strings.Builder
+	for i := 0; i < 65; i++ {
+		fmt.Fprintf(&agentsBlock, "  - id: \"home%d\"\n    token: \"t%d\"\n", i, i)
+	}
+	y := fmt.Sprintf(`
+wireguard:
+  private_key: "cHJpdmF0ZWtleWhlcmUK"
+  subnet: "10.99.0.0/24"
+agents:
+%s`, agentsBlock.String())
+	if _, err := LoadServerConfig(writeTemp(t, y)); err != nil {
+		t.Errorf("flag-off load should succeed regardless of agent count: %v", err)
 	}
 }
