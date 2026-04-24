@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -374,5 +375,143 @@ pelican:
 	}
 	if !c.Pelican.ContainerGatedTunnels {
 		t.Errorf("expected ContainerGatedTunnels=true after yaml parse")
+	}
+}
+
+// ── Pelican bindings (multi-agent plan 1) ────────────────────────────────────
+
+const bindingsBaseYAML = `
+agents:
+  - id: "home1"
+    token: "tok1"
+  - id: "home2"
+    token: "tok2"
+wireguard:
+  private_key: "cHJpdmF0ZWtleWhlcmUK"
+  subnet: "10.99.0.0/24"
+`
+
+func TestLoadServerConfig_PelicanBindings_NewShape(t *testing.T) {
+	y := bindingsBaseYAML + `
+pelican:
+  enabled: true
+  panel_url: "https://pelican.example"
+  api_key: "secret"
+  bindings:
+    - node_id: 3
+      agent_id: "home1"
+    - node_id: 4
+      agent_id: "home2"
+`
+	cfg, err := LoadServerConfig(writeTemp(t, y))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.Pelican.Bindings) != 2 {
+		t.Fatalf("expected 2 bindings, got %d", len(cfg.Pelican.Bindings))
+	}
+	if cfg.Pelican.Bindings[0].NodeID != 3 || cfg.Pelican.Bindings[0].AgentID != "home1" {
+		t.Errorf("binding[0] = %+v, want {3 home1}", cfg.Pelican.Bindings[0])
+	}
+	if cfg.Pelican.Bindings[1].NodeID != 4 || cfg.Pelican.Bindings[1].AgentID != "home2" {
+		t.Errorf("binding[1] = %+v, want {4 home2}", cfg.Pelican.Bindings[1])
+	}
+}
+
+func TestLoadServerConfig_PelicanBindings_LegacyShape(t *testing.T) {
+	y := bindingsBaseYAML + `
+pelican:
+  enabled: true
+  panel_url: "https://pelican.example"
+  api_key: "secret"
+  node_id: 3
+  default_agent_id: "home1"
+`
+	cfg, err := LoadServerConfig(writeTemp(t, y))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.Pelican.Bindings) != 1 {
+		t.Fatalf("legacy config should migrate to 1 binding, got %d", len(cfg.Pelican.Bindings))
+	}
+	b := cfg.Pelican.Bindings[0]
+	if b.NodeID != 3 || b.AgentID != "home1" {
+		t.Errorf("migrated binding = %+v, want {3 home1}", b)
+	}
+}
+
+func TestLoadServerConfig_PelicanBindings_BothShapes_NewShapeWins(t *testing.T) {
+	y := bindingsBaseYAML + `
+pelican:
+  enabled: true
+  panel_url: "https://pelican.example"
+  api_key: "secret"
+  node_id: 99
+  default_agent_id: "should_be_ignored"
+  bindings:
+    - node_id: 3
+      agent_id: "home1"
+`
+	cfg, err := LoadServerConfig(writeTemp(t, y))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.Pelican.Bindings) != 1 || cfg.Pelican.Bindings[0].NodeID != 3 {
+		t.Errorf("new shape should win, got %+v", cfg.Pelican.Bindings)
+	}
+}
+
+func TestLoadServerConfig_PelicanBindings_ValidateAgentExists(t *testing.T) {
+	y := bindingsBaseYAML + `
+pelican:
+  enabled: true
+  panel_url: "https://pelican.example"
+  api_key: "secret"
+  bindings:
+    - node_id: 3
+      agent_id: "does_not_exist"
+`
+	_, err := LoadServerConfig(writeTemp(t, y))
+	if err == nil {
+		t.Fatal("expected validation error for unknown agent_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "does_not_exist") {
+		t.Errorf("error should mention unknown agent ID; got: %v", err)
+	}
+}
+
+func TestLoadServerConfig_PelicanBindings_ValidateDuplicateNode(t *testing.T) {
+	y := bindingsBaseYAML + `
+pelican:
+  enabled: true
+  panel_url: "https://pelican.example"
+  api_key: "secret"
+  bindings:
+    - node_id: 3
+      agent_id: "home1"
+    - node_id: 3
+      agent_id: "home2"
+`
+	_, err := LoadServerConfig(writeTemp(t, y))
+	if err == nil {
+		t.Fatal("expected validation error for duplicate node_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "node_id") {
+		t.Errorf("error should mention duplicate node_id; got: %v", err)
+	}
+}
+
+func TestLoadServerConfig_PelicanBindings_DisabledSkipsValidation(t *testing.T) {
+	// When pelican.enabled is false, we should not block on bindings issues —
+	// operators commonly leave stale pelican config while disabled.
+	y := bindingsBaseYAML + `
+pelican:
+  enabled: false
+  bindings:
+    - node_id: 3
+      agent_id: "does_not_exist"
+`
+	if _, err := LoadServerConfig(writeTemp(t, y)); err != nil {
+		t.Errorf("disabled pelican should skip bindings validation: %v", err)
 	}
 }
