@@ -5,27 +5,39 @@ import (
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/multiagent"
 )
 
 // ── mock WireGuard ────────────────────────────────────────────────────────────
 
 type mockWG struct {
-	peers map[string]bool
+	peers           map[string]bool            // pubkey → present (legacy flat view)
+	peersByIface    map[string]map[string]bool // iface → pubkey → present
 }
 
 func newMockWG() *mockWG {
-	return &mockWG{peers: make(map[string]bool)}
+	return &mockWG{
+		peers:        make(map[string]bool),
+		peersByIface: make(map[string]map[string]bool),
+	}
 }
 
 func (m *mockWG) Setup(_ string, _ string, _ int, _ string, _ ...int) error { return nil }
 
 func (m *mockWG) AddPeer(iface string, peer models.WireGuardPeerConfig, keepaliveSeconds int) error {
 	m.peers[peer.PublicKey] = true
+	if m.peersByIface[iface] == nil {
+		m.peersByIface[iface] = make(map[string]bool)
+	}
+	m.peersByIface[iface][peer.PublicKey] = true
 	return nil
 }
 
 func (m *mockWG) RemovePeer(iface string, pk string) error {
 	delete(m.peers, pk)
+	if byKey := m.peersByIface[iface]; byKey != nil {
+		delete(byKey, pk)
+	}
 	return nil
 }
 
@@ -222,5 +234,183 @@ func TestRegistry_Deregister(t *testing.T) {
 	// WireGuard peer removed.
 	if wg.peers["pubkey-agent1"] {
 		t.Error("WireGuard peer should be removed after Deregister")
+	}
+}
+
+// ── Multi-agent mode (plan 2) ────────────────────────────────────────────────
+
+func mustCompute(t *testing.T, id string, idx int) multiagent.Layout {
+	t.Helper()
+	l, err := multiagent.Compute(id, idx, "10.99.0.0/24", 51820, "wg-")
+	if err != nil {
+		t.Fatalf("compute layout %s/%d: %v", id, idx, err)
+	}
+	return l
+}
+
+func newMultiAgentTestRegistry(t *testing.T, agents ...string) (*Registry, *mockWG, map[string]multiagent.Layout) {
+	t.Helper()
+	wg := newMockWG()
+	layouts := make(map[string]multiagent.Layout, len(agents))
+	for i, id := range agents {
+		layouts[id] = mustCompute(t, id, i)
+	}
+	r, err := NewMultiAgentRegistry(wg, layouts, "203.0.113.1", 15)
+	if err != nil {
+		t.Fatalf("NewMultiAgentRegistry: %v", err)
+	}
+	return r, wg, layouts
+}
+
+func TestMultiAgent_Register_SeparateInterfacesPerAgent(t *testing.T) {
+	r, wg, layouts := newMultiAgentTestRegistry(t, "home1", "home2")
+
+	resp1, err := r.Register("home1", "pubkey-home1")
+	if err != nil {
+		t.Fatalf("register home1: %v", err)
+	}
+	resp2, err := r.Register("home2", "pubkey-home2")
+	if err != nil {
+		t.Fatalf("register home2: %v", err)
+	}
+
+	// Endpoints use per-agent ListenPort.
+	if resp1.ServerEndpoint != "203.0.113.1:51820" {
+		t.Errorf("home1 endpoint = %q, want 203.0.113.1:51820", resp1.ServerEndpoint)
+	}
+	if resp2.ServerEndpoint != "203.0.113.1:51821" {
+		t.Errorf("home2 endpoint = %q, want 203.0.113.1:51821", resp2.ServerEndpoint)
+	}
+
+	// AssignedIP comes from the /30 layout, not a shared pool.
+	if resp1.AssignedIP != layouts["home1"].AgentIP.String() {
+		t.Errorf("home1 IP = %q, want %q", resp1.AssignedIP, layouts["home1"].AgentIP)
+	}
+	if resp2.AssignedIP != layouts["home2"].AgentIP.String() {
+		t.Errorf("home2 IP = %q, want %q", resp2.AssignedIP, layouts["home2"].AgentIP)
+	}
+	if resp1.AssignedIP == resp2.AssignedIP {
+		t.Errorf("two agents got the same AssignedIP %q", resp1.AssignedIP)
+	}
+
+	// Peers are registered on their own dedicated interface — no collision.
+	if !wg.peersByIface["wg-home1"]["pubkey-home1"] {
+		t.Error("home1 peer should be on wg-home1")
+	}
+	if !wg.peersByIface["wg-home2"]["pubkey-home2"] {
+		t.Error("home2 peer should be on wg-home2")
+	}
+	if wg.peersByIface["wg-home1"]["pubkey-home2"] {
+		t.Error("home2 peer should NOT be on wg-home1 (multi-agent isolation broken)")
+	}
+	if wg.peersByIface["wg-home2"]["pubkey-home1"] {
+		t.Error("home1 peer should NOT be on wg-home2 (multi-agent isolation broken)")
+	}
+}
+
+func TestMultiAgent_Register_UnknownIDRejected(t *testing.T) {
+	r, _, _ := newMultiAgentTestRegistry(t, "home1")
+
+	_, err := r.Register("not-in-layouts", "pubkey")
+	if err == nil {
+		t.Fatal("expected rejection of agent ID not present in layouts")
+	}
+}
+
+func TestMultiAgent_Register_RekeyRemovesStalePeerOnSameInterface(t *testing.T) {
+	r, wg, _ := newMultiAgentTestRegistry(t, "home1")
+
+	if _, err := r.Register("home1", "old-key"); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	if !wg.peersByIface["wg-home1"]["old-key"] {
+		t.Fatal("old-key should be on wg-home1 after first register")
+	}
+
+	if _, err := r.Register("home1", "new-key"); err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	if wg.peersByIface["wg-home1"]["old-key"] {
+		t.Error("old-key should be removed from wg-home1 after re-register")
+	}
+	if !wg.peersByIface["wg-home1"]["new-key"] {
+		t.Error("new-key should be on wg-home1 after re-register")
+	}
+}
+
+func TestMultiAgent_Deregister_RemovesPeerFromCorrectInterface(t *testing.T) {
+	r, wg, _ := newMultiAgentTestRegistry(t, "home1", "home2")
+
+	if _, err := r.Register("home1", "pk1"); err != nil {
+		t.Fatalf("register home1: %v", err)
+	}
+	if _, err := r.Register("home2", "pk2"); err != nil {
+		t.Fatalf("register home2: %v", err)
+	}
+
+	if err := r.Deregister("home1"); err != nil {
+		t.Fatalf("deregister home1: %v", err)
+	}
+	if wg.peersByIface["wg-home1"]["pk1"] {
+		t.Error("home1 peer should be removed from wg-home1")
+	}
+	if !wg.peersByIface["wg-home2"]["pk2"] {
+		t.Error("home2 peer must not be affected by home1 deregister")
+	}
+}
+
+func TestMultiAgent_LoadFromState_RestoresOnCorrectInterface(t *testing.T) {
+	r, wg, _ := newMultiAgentTestRegistry(t, "home1", "home2")
+
+	restored := []models.Agent{
+		{ID: "home1", PublicKey: "restored-pk1", AssignedIP: "10.99.0.2"},
+		{ID: "home2", PublicKey: "restored-pk2", AssignedIP: "10.99.0.6"},
+	}
+	r.LoadFromState(restored)
+
+	if !wg.peersByIface["wg-home1"]["restored-pk1"] {
+		t.Error("restored home1 peer should be on wg-home1")
+	}
+	if !wg.peersByIface["wg-home2"]["restored-pk2"] {
+		t.Error("restored home2 peer should be on wg-home2")
+	}
+}
+
+func TestMultiAgent_LoadFromState_SkipsAgentWithoutLayout(t *testing.T) {
+	// Operator removed home2 from server.yaml but state still has it.
+	r, wg, _ := newMultiAgentTestRegistry(t, "home1")
+
+	restored := []models.Agent{
+		{ID: "home1", PublicKey: "pk1", AssignedIP: "10.99.0.2"},
+		{ID: "home-ghost", PublicKey: "pk-ghost", AssignedIP: "10.99.0.6"},
+	}
+	r.LoadFromState(restored)
+
+	if !wg.peersByIface["wg-home1"]["pk1"] {
+		t.Error("home1 peer should be restored")
+	}
+	// Ghost peer must not be added to any interface.
+	for iface, byKey := range wg.peersByIface {
+		if byKey["pk-ghost"] {
+			t.Errorf("ghost peer should be skipped, but appeared on %s", iface)
+		}
+	}
+}
+
+func TestNewMultiAgentRegistry_RejectsEmptyLayouts(t *testing.T) {
+	wg := newMockWG()
+	if _, err := NewMultiAgentRegistry(wg, nil, "203.0.113.1", 15); err == nil {
+		t.Fatal("expected error for nil layouts")
+	}
+	if _, err := NewMultiAgentRegistry(wg, map[string]multiagent.Layout{}, "203.0.113.1", 15); err == nil {
+		t.Fatal("expected error for empty layouts")
+	}
+}
+
+func TestNewMultiAgentRegistry_RejectsEmptyPublicEndpointBase(t *testing.T) {
+	wg := newMockWG()
+	layouts := map[string]multiagent.Layout{"h": mustCompute(t, "h", 0)}
+	if _, err := NewMultiAgentRegistry(wg, layouts, "", 15); err == nil {
+		t.Fatal("expected error for empty publicEndpointBase")
 	}
 }

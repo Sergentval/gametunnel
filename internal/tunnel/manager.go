@@ -27,6 +27,13 @@ type CreateRequest struct {
 	PelicanServerUUID   *string
 }
 
+// AgentResolver returns the per-agent mark, routing table, and WireGuard
+// interface for a given agent ID. ok must be false when the agent is not
+// known. Used by Manager in multi-agent mode to route each tunnel through
+// its owning agent's WG interface and mark its packets with the agent's
+// fwmark.
+type AgentResolver func(agentID string) (mark string, table int, iface string, ok bool)
+
 // Manager orchestrates the lifecycle of tunnels and MARK rules.
 // Game traffic is forwarded directly through WireGuard (no GRE encapsulation).
 type Manager struct {
@@ -40,11 +47,33 @@ type Manager struct {
 	wgInterface string
 	tunnels     map[string]models.Tunnel
 	portUsed    map[int]string // port → tunnel ID
-	gatedMode   bool          // when true, Create does not add the port to nft — gatestate owns that
+	gatedMode   bool           // when true, Create does not add the port to nft — gatestate owns that
 
 	// OnTunnelChange is an optional callback invoked after a tunnel is created
 	// or deleted. The event string is "tunnel_created" or "tunnel_deleted".
 	OnTunnelChange func(event string, tunnel models.Tunnel)
+
+	// AgentResolver, when non-nil, supplies per-agent (mark, table, iface)
+	// at tunnel-create / -delete / gate-state time. This is how multi-agent
+	// mode routes each tunnel to the correct agent's WireGuard interface.
+	// When nil (legacy single-agent mode), the manager falls back to the
+	// fixed mark / table / wgInterface set at construction.
+	AgentResolver AgentResolver
+}
+
+// resolveForAgent returns the (mark, table, iface) triple to use for an
+// agent. In legacy mode (resolver nil), returns the fixed values from
+// construction. In multi-agent mode, calls the resolver and falls back to
+// the fixed values if the agent is unknown — this is a defensive fallback;
+// in practice the resolver should always know the agent because tunnels
+// can only be created via API calls that pass through agent auth.
+func (m *Manager) resolveForAgent(agentID string) (mark string, table int, iface string) {
+	if m.AgentResolver != nil {
+		if mk, tb, ifc, ok := m.AgentResolver(agentID); ok {
+			return mk, tb, ifc
+		}
+	}
+	return m.mark, m.table, m.wgInterface
 }
 
 // NewManager creates a Manager with the provided dependencies.
@@ -90,22 +119,26 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	}
 	id := hex.EncodeToString(idBytes)
 
+	// Resolve per-agent mark / table / iface (multi-agent mode), falling
+	// back to the manager's fixed values in legacy mode.
+	mark, table, iface := m.resolveForAgent(req.AgentID)
+
 	// Add the MARK rule only in legacy (non-gated) mode.
 	// In gated mode, gatestate.Manager owns the add/remove decision.
 	if !gated {
-		if err := m.tproxy.AddRule(string(req.Protocol), req.PublicPort, m.mark); err != nil {
+		if err := m.tproxy.AddRule(string(req.Protocol), req.PublicPort, mark); err != nil {
 			m.mu.Unlock()
 			return models.Tunnel{}, fmt.Errorf("add mark rule for port %d: %w", req.PublicPort, err)
 		}
 	}
 
-	// Set up forward route so marked packets route through the WireGuard interface.
-	if err := routing.EnsureForwardRoute(m.table, m.wgInterface); err != nil {
+	// Set up forward route so marked packets route through this agent's WG interface.
+	if err := routing.EnsureForwardRoute(table, iface); err != nil {
 		_ = err // non-fatal: route may already exist from another tunnel
 	}
 
 	// Add FORWARD accept rules for traffic between public interface and WireGuard.
-	if err := routing.EnsureForwardRules(m.wgInterface, m.nftFwd); err != nil {
+	if err := routing.EnsureForwardRules(iface, m.nftFwd); err != nil {
 		_ = err // non-fatal: forwarding may still work if policy is ACCEPT
 	}
 
@@ -160,7 +193,8 @@ func (m *Manager) Delete(id string) error {
 		return fmt.Errorf("tunnel %q not found", id)
 	}
 
-	if err := m.tproxy.RemoveRule(string(t.Protocol), t.PublicPort, m.mark); err != nil {
+	mark, _, _ := m.resolveForAgent(t.AgentID)
+	if err := m.tproxy.RemoveRule(string(t.Protocol), t.PublicPort, mark); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("remove mark rule for tunnel %s: %w", id, err)
 	}
@@ -206,6 +240,7 @@ func (m *Manager) SetGateState(tunnelID string, state models.GateState) error {
 	m.tunnels[tunnelID] = t
 	port := t.PublicPort
 	protocol := string(t.Protocol)
+	agentID := t.AgentID
 	snapshot := t // copy for callback
 	cb := m.OnTunnelChange
 	m.mu.Unlock()
@@ -216,11 +251,12 @@ func (m *Manager) SetGateState(tunnelID string, state models.GateState) error {
 	if cb != nil {
 		cb("tunnel_gate_changed", snapshot)
 	}
+	mark, _, _ := m.resolveForAgent(agentID)
 	switch state {
 	case models.GateRunning:
-		return m.tproxy.AddRule(protocol, port, m.mark)
+		return m.tproxy.AddRule(protocol, port, mark)
 	case models.GateStopped, models.GateSuspended:
-		return m.tproxy.RemoveRule(protocol, port, m.mark)
+		return m.tproxy.RemoveRule(protocol, port, mark)
 	}
 	return nil
 }

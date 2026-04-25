@@ -12,6 +12,13 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+// wireguardManager is safe to use against multiple WireGuard interfaces
+// concurrently. All mutating calls (Setup, AddPeer, RemovePeer, SetAddress)
+// take the interface name as an argument, and wgctrl.Client is itself
+// concurrency-safe across devices. The single publicKey field is idempotent:
+// Setup derives it from the server private key, which is shared across all
+// per-agent interfaces in multi-agent mode, so repeated Setup calls with
+// different interface names write the same value.
 type wireguardManager struct {
 	client    *wgctrl.Client
 	publicKey string

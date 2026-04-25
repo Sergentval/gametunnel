@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/multiagent"
 	"github.com/Sergentval/gametunnel/internal/netutil"
 )
 
@@ -21,6 +22,14 @@ type RegisterResponse struct {
 }
 
 // Registry tracks agents and manages their WireGuard peers.
+//
+// Two operating modes:
+//   - Legacy (NewRegistry): single WireGuard interface, shared IP pool.
+//     Every peer registers on r.wgIface with an IP allocated from r.subnet.
+//   - Multi-agent (NewMultiAgentRegistry): each agent has its own
+//     WireGuard interface, UDP listen port, and fixed /30. The peer is
+//     registered on its per-agent interface via r.layouts[id]. The IP pool
+//     is unused — each agent's AgentIP comes from its Layout.
 type Registry struct {
 	mu               sync.Mutex
 	wg               netutil.WireGuardManager
@@ -29,8 +38,13 @@ type Registry struct {
 	serverEndpoint   string
 	keepaliveSeconds int
 	agents           map[string]models.Agent
-	ipPool           map[string]bool // assigned IP → in-use
+	ipPool           map[string]bool // assigned IP → in-use (legacy mode only)
 	nextIP           net.IP
+
+	// Multi-agent mode fields (nil/empty in legacy mode).
+	multiAgent         bool
+	layouts            map[string]multiagent.Layout
+	publicEndpointBase string // host/IP only — per-agent port appended from layout.ListenPort
 }
 
 // NewRegistry creates a Registry for the given WireGuard interface and subnet.
@@ -59,9 +73,50 @@ func NewRegistry(wg netutil.WireGuardManager, wgIface, subnetStr, serverEndpoint
 	}, nil
 }
 
+// NewMultiAgentRegistry constructs a Registry in multi-agent mode. Each
+// agent ID in layouts gets its own WireGuard interface, UDP listen port,
+// and /30 subnet. The shared r.wgIface / r.subnet / r.ipPool fields are
+// unused in this mode — Register() routes peers to layouts[id].Interface.
+//
+// publicEndpointBase is the VPS public host or IP (e.g. "203.0.113.1");
+// the per-agent listen port is appended when constructing each agent's
+// ServerEndpoint response.
+func NewMultiAgentRegistry(
+	wg netutil.WireGuardManager,
+	layouts map[string]multiagent.Layout,
+	publicEndpointBase string,
+	keepaliveSeconds int,
+) (*Registry, error) {
+	if wg == nil {
+		return nil, fmt.Errorf("wg manager is required")
+	}
+	if len(layouts) == 0 {
+		return nil, fmt.Errorf("at least one layout is required")
+	}
+	if publicEndpointBase == "" {
+		return nil, fmt.Errorf("publicEndpointBase is required")
+	}
+	return &Registry{
+		wg:                 wg,
+		keepaliveSeconds:   keepaliveSeconds,
+		agents:             make(map[string]models.Agent),
+		multiAgent:         true,
+		layouts:            layouts,
+		publicEndpointBase: publicEndpointBase,
+	}, nil
+}
+
 // Register registers a new agent or handles a reconnection (same ID).
 // On reconnection the existing IP is reused and the WireGuard peer is refreshed.
 func (r *Registry) Register(id, publicKey string) (RegisterResponse, error) {
+	if r.multiAgent {
+		return r.registerMultiAgent(id, publicKey)
+	}
+	return r.registerLegacy(id, publicKey)
+}
+
+// registerLegacy is the pre-multi-agent Register path. Unchanged behavior.
+func (r *Registry) registerLegacy(id, publicKey string) (RegisterResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -129,6 +184,60 @@ func (r *Registry) Register(id, publicKey string) (RegisterResponse, error) {
 	}, nil
 }
 
+// registerMultiAgent routes the peer to the agent's dedicated WireGuard
+// interface. AllowedIPs remains 0.0.0.0/0 — safe here because each
+// interface has exactly one peer, so cryptokey routing cannot collide.
+func (r *Registry) registerMultiAgent(id, publicKey string) (RegisterResponse, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	layout, ok := r.layouts[id]
+	if !ok {
+		return RegisterResponse{}, fmt.Errorf("no layout for agent %q (not in server config)", id)
+	}
+
+	// Handle re-registration with rotated public key: remove stale peer
+	// from this agent's interface before adding the new one.
+	if existing, exists := r.agents[id]; exists {
+		if existing.PublicKey != "" && existing.PublicKey != publicKey {
+			if err := r.wg.RemovePeer(layout.Interface, existing.PublicKey); err != nil {
+				slog.Warn("remove stale peer on key change",
+					"agent_id", id, "iface", layout.Interface, "error", err)
+			}
+		}
+	}
+
+	assignedIP := layout.AgentIP.String()
+	peerCfg := models.WireGuardPeerConfig{
+		PublicKey:  publicKey,
+		AllowedIPs: []string{"0.0.0.0/0", "::/0"},
+		AssignedIP: assignedIP,
+	}
+	if err := r.wg.AddPeer(layout.Interface, peerCfg, r.keepaliveSeconds); err != nil {
+		return RegisterResponse{}, fmt.Errorf("add peer on %s for agent %s: %w",
+			layout.Interface, id, err)
+	}
+
+	endpoint := fmt.Sprintf("%s:%d", r.publicEndpointBase, layout.ListenPort)
+
+	now := time.Now()
+	r.agents[id] = models.Agent{
+		ID:            id,
+		PublicKey:     publicKey,
+		AssignedIP:    assignedIP,
+		Status:        models.AgentStatusOnline,
+		LastHeartbeat: now,
+		RegisteredAt:  now,
+	}
+
+	return RegisterResponse{
+		AgentID:         id,
+		AssignedIP:      assignedIP,
+		ServerPublicKey: r.wg.PublicKey(),
+		ServerEndpoint:  endpoint,
+	}, nil
+}
+
 // Heartbeat updates the agent's last-seen timestamp and marks it online.
 func (r *Registry) Heartbeat(id string) error {
 	r.mu.Lock()
@@ -154,11 +263,22 @@ func (r *Registry) Deregister(id string) error {
 		return fmt.Errorf("agent %q not found", id)
 	}
 
-	if err := r.wg.RemovePeer(r.wgIface, a.PublicKey); err != nil {
+	iface := r.wgIface
+	if r.multiAgent {
+		layout, ok := r.layouts[id]
+		if !ok {
+			return fmt.Errorf("no layout for agent %q", id)
+		}
+		iface = layout.Interface
+	}
+
+	if err := r.wg.RemovePeer(iface, a.PublicKey); err != nil {
 		return fmt.Errorf("remove WireGuard peer for agent %s: %w", id, err)
 	}
 
-	delete(r.ipPool, a.AssignedIP)
+	if !r.multiAgent {
+		delete(r.ipPool, a.AssignedIP)
+	}
 	delete(r.agents, id)
 	return nil
 }
@@ -206,6 +326,11 @@ func (r *Registry) CheckTimeouts(timeout time.Duration) []string {
 // their WireGuard peers to the interface. Without the peer re-add, a server
 // restart would leave the WG interface with no peers until the agent
 // re-registers — breaking tunnel connectivity in the meantime.
+//
+// In multi-agent mode, the peer is re-added on the agent's dedicated
+// interface (layouts[id].Interface); agents without a layout are skipped
+// with a warning (typically means the agent was removed from server.yaml
+// but still has persisted state).
 func (r *Registry) LoadFromState(agents []models.Agent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -213,13 +338,18 @@ func (r *Registry) LoadFromState(agents []models.Agent) {
 	var highestIP net.IP
 	for _, a := range agents {
 		r.agents[a.ID] = a
-		r.ipPool[a.AssignedIP] = true
 
-		if ip := net.ParseIP(a.AssignedIP); ip != nil {
-			ip4 := ip.To4()
-			if ip4 != nil {
-				if highestIP == nil || bytes.Compare(ip4, highestIP) > 0 {
-					highestIP = ip4
+		// Legacy: reserve the IP in the pool so allocateIP doesn't hand it
+		// out to a new agent. Multi-agent: layouts are the source of truth
+		// for IP assignment, pool is unused.
+		if !r.multiAgent {
+			r.ipPool[a.AssignedIP] = true
+			if ip := net.ParseIP(a.AssignedIP); ip != nil {
+				ip4 := ip.To4()
+				if ip4 != nil {
+					if highestIP == nil || bytes.Compare(ip4, highestIP) > 0 {
+						highestIP = ip4
+					}
 				}
 			}
 		}
@@ -229,23 +359,33 @@ func (r *Registry) LoadFromState(agents []models.Agent) {
 		// so we add the peer with just the key + allowed IPs. The kernel will
 		// accept inbound packets once the agent connects and establishes the
 		// endpoint via handshake.
-		if a.PublicKey != "" {
-			peerCfg := models.WireGuardPeerConfig{
-				PublicKey:  a.PublicKey,
-				AllowedIPs: []string{"0.0.0.0/0", "::/0"},
+		if a.PublicKey == "" {
+			continue
+		}
+		iface := r.wgIface
+		if r.multiAgent {
+			layout, ok := r.layouts[a.ID]
+			if !ok {
+				slog.Warn("restore wireguard peer skipped: no layout for agent",
+					"agent_id", a.ID)
+				continue
 			}
-			if err := r.wg.AddPeer(r.wgIface, peerCfg, r.keepaliveSeconds); err != nil {
-				slog.Warn("restore wireguard peer", "agent_id", a.ID, "error", err)
-			}
+			iface = layout.Interface
+		}
+		peerCfg := models.WireGuardPeerConfig{
+			PublicKey:  a.PublicKey,
+			AllowedIPs: []string{"0.0.0.0/0", "::/0"},
+		}
+		if err := r.wg.AddPeer(iface, peerCfg, r.keepaliveSeconds); err != nil {
+			slog.Warn("restore wireguard peer",
+				"agent_id", a.ID, "iface", iface, "error", err)
 		}
 	}
 
 	// Advance nextIP past the highest restored IP so future allocations
 	// start from the correct position instead of scanning from .2 every time.
-	// Only advance if the next candidate still belongs to the subnet; if the
-	// restored set already covers the tail of the subnet, allocateIP's
-	// wrap-around path will handle future allocation.
-	if highestIP != nil {
+	// Legacy-only: multi-agent mode has no shared IP pool.
+	if !r.multiAgent && highestIP != nil {
 		next := incrementIP(highestIP)
 		if r.subnet.Contains(next) {
 			r.nextIP = next

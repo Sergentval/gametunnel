@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -120,6 +121,11 @@ type ServerConfig struct {
 	TProxy    TProxySettings    `yaml:"tproxy"`
 	Pelican   PelicanSettings   `yaml:"pelican"`
 	Security  SecuritySettings  `yaml:"security"`
+
+	// MultiAgentEnabled turns on per-agent WireGuard interfaces, per-agent
+	// fwmarks, and per-agent routing tables. Default false — legacy single-wg
+	// behavior is preserved. See docs/superpowers/plans/2026-04-24-multi-agent-plan-2-routing.md.
+	MultiAgentEnabled bool `yaml:"multi_agent_enabled,omitempty"`
 }
 
 // applyDefaults fills in zero-value fields with sensible defaults.
@@ -213,6 +219,24 @@ func (c *ServerConfig) validate() error {
 			seenNode[b.NodeID] = true
 		}
 	}
+	// Multi-agent capacity check: each agent needs a /30 carved out of the
+	// WireGuard subnet. Base subnet prefix must be ≤/30, and we cap at
+	// (2^(30-prefix)) agents.
+	if c.MultiAgentEnabled {
+		_, ipnet, err := net.ParseCIDR(c.WireGuard.Subnet)
+		if err != nil {
+			return fmt.Errorf("wireguard.subnet is invalid for multi-agent mode: %w", err)
+		}
+		prefix, _ := ipnet.Mask.Size()
+		if prefix > 30 {
+			return fmt.Errorf("wireguard.subnet too small for multi-agent mode (/%d, need ≤/30)", prefix)
+		}
+		capacity := 1 << (30 - prefix)
+		if len(c.Agents) > capacity {
+			return fmt.Errorf("too many agents for subnet /30 capacity (%d agents, %d /30 slots)",
+				len(c.Agents), capacity)
+		}
+	}
 	return nil
 }
 
@@ -257,6 +281,18 @@ func (c *ServerConfig) AgentByID(id string) *AgentEntry {
 		}
 	}
 	return nil
+}
+
+// AgentIndex returns the 0-based index of the agent with the given ID, or
+// -1 if not found. Used for per-agent resource allocation (fwmark, routing
+// table, WireGuard interface, UDP listen port) when MultiAgentEnabled is on.
+func (c *ServerConfig) AgentIndex(id string) int {
+	for i, a := range c.Agents {
+		if a.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // WriteServerConfig marshals cfg to YAML and writes it to path, creating
