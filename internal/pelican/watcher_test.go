@@ -318,3 +318,181 @@ func TestWatcher_ProtocolMapping(t *testing.T) {
 		t.Errorf("expected tcp (default for unmapped port), got %s", got)
 	}
 }
+
+// TestWatcher_Sync_DualStack_CreatesBothProtocols verifies that DualStack mode
+// produces exactly two tunnels per Pelican allocation (one TCP, one UDP),
+// with names that include the protocol so the pair is distinguishable in
+// state.json and operator logs.
+func TestWatcher_Sync_DualStack_CreatesBothProtocols(t *testing.T) {
+	mgr, _ := newTestTunnelManager()
+
+	srv := Server{ID: 30, UUID: "dune-server-uuid", Name: "dune-1", Node: 7, Allocation: 215}
+	api := &mockPelicanAPI{
+		allocations: []Allocation{
+			{ID: 215, IP: "10.99.0.2", Port: 7777, Assigned: true},
+		},
+		allocServerMap: map[int]Server{215: srv},
+	}
+
+	cfg := defaultWatcherConfig()
+	cfg.DualStack = true
+	cfg.PortProtocols = map[int]string{7777: "udp"} // should be IGNORED in dual-stack mode
+
+	watcher := NewWatcher(cfg, api, mgr, newTestStore(t))
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	tunnels := mgr.List()
+	if len(tunnels) != 2 {
+		t.Fatalf("expected 2 tunnels in dual-stack, got %d", len(tunnels))
+	}
+
+	seen := map[models.Protocol]models.Tunnel{}
+	for _, tun := range tunnels {
+		if tun.PublicPort != 7777 {
+			t.Errorf("unexpected public port %d", tun.PublicPort)
+		}
+		if _, dupe := seen[tun.Protocol]; dupe {
+			t.Errorf("duplicate tunnel for protocol %s", tun.Protocol)
+		}
+		seen[tun.Protocol] = tun
+	}
+	if _, ok := seen[models.ProtocolTCP]; !ok {
+		t.Errorf("missing TCP tunnel; got %+v", seen)
+	}
+	if _, ok := seen[models.ProtocolUDP]; !ok {
+		t.Errorf("missing UDP tunnel; got %+v", seen)
+	}
+
+	// Names should be distinguishable.
+	if seen[models.ProtocolTCP].Name == seen[models.ProtocolUDP].Name {
+		t.Errorf("TCP and UDP tunnels share a name %q — must be distinguishable", seen[models.ProtocolTCP].Name)
+	}
+	wantTCPName := "pelican-30-7777-tcp"
+	wantUDPName := "pelican-30-7777-udp"
+	if seen[models.ProtocolTCP].Name != wantTCPName {
+		t.Errorf("TCP name: got %q want %q", seen[models.ProtocolTCP].Name, wantTCPName)
+	}
+	if seen[models.ProtocolUDP].Name != wantUDPName {
+		t.Errorf("UDP name: got %q want %q", seen[models.ProtocolUDP].Name, wantUDPName)
+	}
+}
+
+// TestWatcher_Sync_DualStack_TrackOncePerPort verifies that even though
+// DualStack creates two tunnels per port, Gatestate.Track is called exactly
+// once per (uuid, port) — the underlying container is one entity.
+func TestWatcher_Sync_DualStack_TrackOncePerPort(t *testing.T) {
+	mgr, _ := newTestTunnelManager()
+	tracker := &fakeTracker{}
+
+	srv := Server{ID: 30, UUID: "dune-server-uuid", Name: "dune-1", Node: 7, Allocation: 215}
+	api := &mockPelicanAPI{
+		allocations: []Allocation{
+			{ID: 215, IP: "10.99.0.2", Port: 7777, Assigned: true},
+		},
+		allocServerMap: map[int]Server{215: srv},
+	}
+
+	cfg := defaultWatcherConfig()
+	cfg.DualStack = true
+	cfg.GatestateTracker = tracker
+
+	watcher := NewWatcher(cfg, api, mgr, newTestStore(t))
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if len(mgr.List()) != 2 {
+		t.Fatalf("expected 2 tunnels, got %d", len(mgr.List()))
+	}
+	if len(tracker.tracked) != 1 {
+		t.Fatalf("expected exactly 1 Track call (dual-stack must dedup per uuid,port), got %d: %+v",
+			len(tracker.tracked), tracker.tracked)
+	}
+	if tracker.tracked[0].UUID != "dune-server-uuid" || tracker.tracked[0].Port != 7777 {
+		t.Errorf("Track entry mismatch: %+v", tracker.tracked[0])
+	}
+}
+
+// TestWatcher_Sync_DualStack_DeletesBothAndUntracksOnce verifies that when
+// an allocation is removed, BOTH protocol tunnels are torn down and
+// Gatestate.Untrack fires exactly once for the underlying (uuid, port).
+func TestWatcher_Sync_DualStack_DeletesBothAndUntracksOnce(t *testing.T) {
+	mgr, _ := newTestTunnelManager()
+	tracker := &fakeTracker{}
+
+	srv := Server{ID: 30, UUID: "dune-server-uuid", Name: "dune-1", Node: 7, Allocation: 215}
+	api := &mockPelicanAPI{
+		allocations: []Allocation{
+			{ID: 215, IP: "10.99.0.2", Port: 7777, Assigned: true},
+		},
+		allocServerMap: map[int]Server{215: srv},
+	}
+
+	cfg := defaultWatcherConfig()
+	cfg.DualStack = true
+	cfg.GatestateTracker = tracker
+
+	watcher := NewWatcher(cfg, api, mgr, newTestStore(t))
+
+	// First sync: creates both tunnels.
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("first Sync: %v", err)
+	}
+	if len(mgr.List()) != 2 {
+		t.Fatalf("after first sync expected 2 tunnels, got %d", len(mgr.List()))
+	}
+
+	// Second sync: allocation gone, both tunnels should be removed.
+	api.allocations = []Allocation{}
+	api.allocServerMap = map[int]Server{}
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("second Sync: %v", err)
+	}
+
+	if len(mgr.List()) != 0 {
+		t.Errorf("after teardown expected 0 tunnels, got %d", len(mgr.List()))
+	}
+	if len(tracker.untracked) != 1 {
+		t.Fatalf("expected exactly 1 Untrack call (dual-stack must dedup), got %d: %+v",
+			len(tracker.untracked), tracker.untracked)
+	}
+	if tracker.untracked[0].UUID != "dune-server-uuid" || tracker.untracked[0].Port != 7777 {
+		t.Errorf("Untrack entry mismatch: %+v", tracker.untracked[0])
+	}
+}
+
+// TestWatcher_Sync_DualStack_AllocPortsAreSinglePort verifies a multi-port
+// allocation case under DualStack: two different game ports should yield
+// FOUR tunnels (2 ports × 2 protocols) and Track should fire twice (once
+// per distinct port), not four times.
+func TestWatcher_Sync_DualStack_MultiPort(t *testing.T) {
+	mgr, _ := newTestTunnelManager()
+	tracker := &fakeTracker{}
+
+	srv := Server{ID: 30, UUID: "dune-server-uuid", Name: "dune-1", Node: 7, Allocation: 215}
+	api := &mockPelicanAPI{
+		allocations: []Allocation{
+			{ID: 215, IP: "10.99.0.2", Port: 7777, Assigned: true},
+			{ID: 216, IP: "10.99.0.2", Port: 7778, Assigned: true},
+		},
+		allocServerMap: map[int]Server{215: srv, 216: srv},
+	}
+
+	cfg := defaultWatcherConfig()
+	cfg.DualStack = true
+	cfg.GatestateTracker = tracker
+
+	watcher := NewWatcher(cfg, api, mgr, newTestStore(t))
+	if err := watcher.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if got := len(mgr.List()); got != 4 {
+		t.Fatalf("expected 4 tunnels (2 ports × 2 protocols), got %d", got)
+	}
+	if got := len(tracker.tracked); got != 2 {
+		t.Errorf("expected 2 Track calls (one per port), got %d: %+v", got, tracker.tracked)
+	}
+}
