@@ -34,6 +34,14 @@ type CreateRequest struct {
 // fwmark.
 type AgentResolver func(agentID string) (mark string, table int, iface string, ok bool)
 
+// portKey identifies a tunnel slot inside the manager. Port uniqueness is
+// scoped per (port, protocol) so that dual-stack tunnels (TCP and UDP on the
+// same port) can coexist — see Pelican watcher DualStack mode.
+type portKey struct {
+	port     int
+	protocol models.Protocol
+}
+
 // Manager orchestrates the lifecycle of tunnels and MARK rules.
 // Game traffic is forwarded directly through WireGuard (no GRE encapsulation).
 type Manager struct {
@@ -46,8 +54,8 @@ type Manager struct {
 	localIP     net.IP
 	wgInterface string
 	tunnels     map[string]models.Tunnel
-	portUsed    map[int]string // port → tunnel ID
-	gatedMode   bool           // when true, Create does not add the port to nft — gatestate owns that
+	portUsed    map[portKey]string // (port, protocol) → tunnel ID
+	gatedMode   bool               // when true, Create does not add the port to nft — gatestate owns that
 
 	// OnTunnelChange is an optional callback invoked after a tunnel is created
 	// or deleted. The event string is "tunnel_created" or "tunnel_deleted".
@@ -89,7 +97,7 @@ func NewManager(tp tproxy.Manager, rt routing.Manager, mark string, table int, l
 		localIP:     localIP,
 		wgInterface: wgInterface,
 		tunnels:     make(map[string]models.Tunnel),
-		portUsed:    make(map[int]string),
+		portUsed:    make(map[portKey]string),
 	}
 }
 
@@ -105,10 +113,12 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	// Capture gated mode flag while holding the lock.
 	gated := m.gatedMode
 
-	// Port uniqueness check.
-	if existing, used := m.portUsed[req.PublicPort]; used {
+	// Port uniqueness check — scoped per (port, protocol) so a port can carry
+	// both TCP and UDP tunnels simultaneously (dual-stack mode).
+	pk := portKey{port: req.PublicPort, protocol: req.Protocol}
+	if existing, used := m.portUsed[pk]; used {
 		m.mu.Unlock()
-		return models.Tunnel{}, fmt.Errorf("port %d already used by tunnel %s", req.PublicPort, existing)
+		return models.Tunnel{}, fmt.Errorf("port %d/%s already used by tunnel %s", req.PublicPort, req.Protocol, existing)
 	}
 
 	// Generate random 8-byte hex ID.
@@ -168,7 +178,7 @@ func (m *Manager) Create(req CreateRequest) (models.Tunnel, error) {
 	}
 
 	m.tunnels[id] = t
-	m.portUsed[req.PublicPort] = id
+	m.portUsed[pk] = id
 
 	cb := m.OnTunnelChange
 	m.mu.Unlock()
@@ -200,7 +210,7 @@ func (m *Manager) Delete(id string) error {
 	}
 
 	delete(m.tunnels, id)
-	delete(m.portUsed, t.PublicPort)
+	delete(m.portUsed, portKey{port: t.PublicPort, protocol: t.Protocol})
 
 	cb := m.OnTunnelChange
 	m.mu.Unlock()
@@ -261,13 +271,20 @@ func (m *Manager) SetGateState(tunnelID string, state models.GateState) error {
 	return nil
 }
 
-// TunnelIDByPort returns the tunnel ID that currently owns the given public
-// port, if any. Used by the gatestate port adapter.
-func (m *Manager) TunnelIDByPort(port int) (string, bool) {
+// TunnelIDsByPort returns all tunnel IDs that currently own the given public
+// port across protocols. Used by the gatestate port adapter, which must flip
+// every tunnel on a port (both TCP and UDP in dual-stack mode) when the
+// underlying container's gate state changes. Returns nil if no tunnels exist.
+func (m *Manager) TunnelIDsByPort(port int) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	id, ok := m.portUsed[port]
-	return id, ok
+	var ids []string
+	for pk, id := range m.portUsed {
+		if pk.port == port {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // Get returns a tunnel by ID.
@@ -328,6 +345,6 @@ func (m *Manager) LoadFromState(tunnels []models.Tunnel) {
 	defer m.mu.Unlock()
 	for _, t := range tunnels {
 		m.tunnels[t.ID] = t
-		m.portUsed[t.PublicPort] = t.ID
+		m.portUsed[portKey{port: t.PublicPort, protocol: t.Protocol}] = t.ID
 	}
 }

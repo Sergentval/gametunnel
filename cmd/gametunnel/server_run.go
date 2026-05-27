@@ -423,6 +423,7 @@ func serverRun(args []string) {
 				AgentRegistry:    registry,
 				DefaultProto:     cfg.Pelican.DefaultProtocol,
 				PortProtocols:    cfg.Pelican.PortProtocols,
+				DualStack:        cfg.Pelican.DualStack,
 				GatestateTracker: gatestateMgr, // nil when ContainerGatedTunnels is off — watcher checks
 			}
 			watcher := pelican.NewWatcher(watcherCfg, pelicanClient, tunnelMgr, store)
@@ -533,24 +534,36 @@ func serverRun(args []string) {
 }
 
 // tunnelPortAdapter bridges gatestate.PortController to tunnel.Manager.SetGateState,
-// looking up the tunnel ID by port before applying the state change.
+// looking up every tunnel on the given port before applying the state change.
+// In dual-stack mode a single port can carry both a TCP and a UDP tunnel; both
+// must transition together when the underlying container's gate state changes.
 type tunnelPortAdapter struct{ mgr *tunnel.Manager }
 
 func (a *tunnelPortAdapter) AddPort(port int) error {
-	id, ok := a.mgr.TunnelIDByPort(port)
-	if !ok {
+	ids := a.mgr.TunnelIDsByPort(port)
+	if len(ids) == 0 {
 		return fmt.Errorf("no tunnel for port %d", port)
 	}
-	return a.mgr.SetGateState(id, models.GateRunning)
+	for _, id := range ids {
+		if err := a.mgr.SetGateState(id, models.GateRunning); err != nil {
+			return fmt.Errorf("set gate running on tunnel %s (port %d): %w", id, port, err)
+		}
+	}
+	return nil
 }
 
 func (a *tunnelPortAdapter) RemovePort(port int) error {
-	id, ok := a.mgr.TunnelIDByPort(port)
-	if !ok {
-		// Nothing to remove — tunnel may have been deleted already.
+	ids := a.mgr.TunnelIDsByPort(port)
+	if len(ids) == 0 {
+		// Nothing to remove — tunnels may have been deleted already.
 		return nil
 	}
-	return a.mgr.SetGateState(id, models.GateStopped)
+	for _, id := range ids {
+		if err := a.mgr.SetGateState(id, models.GateStopped); err != nil {
+			return fmt.Errorf("set gate stopped on tunnel %s (port %d): %w", id, port, err)
+		}
+	}
+	return nil
 }
 
 // subnetFirstIP returns the first usable host address (.1) of a CIDR subnet.

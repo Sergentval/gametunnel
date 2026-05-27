@@ -45,11 +45,21 @@ type WatcherConfig struct {
 	// DefaultProto is the fallback protocol ("tcp" or "udp") when a port is
 	// not listed in PortProtocols.
 	DefaultProto string
-	// PortProtocols overrides the protocol for specific ports.
+	// PortProtocols overrides the protocol for specific ports. Ignored when
+	// DualStack is true.
 	PortProtocols map[int]string
+	// DualStack, when true, creates BOTH a TCP and a UDP tunnel for every
+	// Pelican allocation regardless of DefaultProto / PortProtocols. This is
+	// the right default for mixed-protocol games (e.g. Dune: Awakening uses
+	// TCP for RabbitMQ and UDP for its UE5 server pool) without forcing the
+	// operator to enumerate every port. The unused protocol on a given port
+	// is harmless idle nft state.
+	DualStack bool
 	// GatestateTracker is optional. When non-nil, the watcher calls Track on
 	// tunnel create and Untrack on tunnel delete so gatestate.Manager knows
-	// which tunnels to gate on container state.
+	// which tunnels to gate on container state. Track/Untrack are scoped per
+	// (uuid, port); the watcher dedups so dual-stack creates/deletes invoke
+	// Track/Untrack exactly once per (uuid, port).
 	GatestateTracker GatestateTracker
 }
 
@@ -71,9 +81,27 @@ func NewWatcher(cfg WatcherConfig, api PelicanAPI, tunnelMgr *tunnel.Manager, st
 	}
 }
 
+// portProto identifies a desired or existing tunnel slot during reconciliation.
+// Using (port, protocol) instead of port-only is what makes DualStack mode
+// possible: the same port number can carry one TCP and one UDP tunnel.
+type portProto struct {
+	port     int
+	protocol models.Protocol
+}
+
+// uuidPort is the (server UUID, port) tuple used to dedup Gatestate Track /
+// Untrack calls. In DualStack mode two tunnels are created per port but the
+// underlying container is one entity, so gatestate must see only one Track /
+// Untrack per (uuid, port).
+type uuidPort struct {
+	uuid string
+	port int
+}
+
 // Sync reconciles the tunnel manager's state with the current Pelican allocations.
 // It creates tunnels for newly assigned ports and removes tunnels for ports that
-// are no longer assigned.
+// are no longer assigned. In DualStack mode it maintains BOTH a TCP and a UDP
+// tunnel for every Pelican allocation.
 func (w *Watcher) Sync() error {
 	// Step 1: Fetch all node allocations.
 	allocations, err := w.api.GetNodeAllocations(w.config.NodeID)
@@ -87,9 +115,10 @@ func (w *Watcher) Sync() error {
 		return fmt.Errorf("pelican sync: build allocation server map: %w", err)
 	}
 
-	// Step 3: Build a map of assigned ports that have a corresponding server.
-	// key = public port, value = the Allocation record.
-	assignedPorts := make(map[int]Allocation)
+	// Step 3: Build the desired (port, protocol) set. Each assigned allocation
+	// yields one entry in single-protocol mode, or two entries (TCP + UDP) in
+	// DualStack mode.
+	wanted := make(map[portProto]Allocation)
 	for _, alloc := range allocations {
 		if !alloc.Assigned {
 			continue
@@ -97,19 +126,24 @@ func (w *Watcher) Sync() error {
 		if _, hasServer := allocServerMap[alloc.ID]; !hasServer {
 			continue
 		}
-		assignedPorts[alloc.Port] = alloc
-	}
-
-	// Step 4: Gather existing Pelican-sourced tunnels from the manager.
-	existing := make(map[int]models.Tunnel) // public port → tunnel
-	for _, t := range w.tunnelMgr.List() {
-		if t.Source == models.TunnelSourcePelican {
-			existing[t.PublicPort] = t
+		if w.config.DualStack {
+			wanted[portProto{alloc.Port, models.ProtocolTCP}] = alloc
+			wanted[portProto{alloc.Port, models.ProtocolUDP}] = alloc
+		} else {
+			wanted[portProto{alloc.Port, w.protocolFor(alloc.Port)}] = alloc
 		}
 	}
 
-	// Step 5: Create tunnels for newly assigned ports.
-	// Resolve the agent IP dynamically — the agent may not have registered yet.
+	// Step 4: Gather existing Pelican-sourced tunnels from the manager.
+	existing := make(map[portProto]models.Tunnel)
+	for _, t := range w.tunnelMgr.List() {
+		if t.Source == models.TunnelSourcePelican {
+			existing[portProto{t.PublicPort, t.Protocol}] = t
+		}
+	}
+
+	// Step 5: Resolve the agent IP dynamically — the agent may not have
+	// registered yet on the first poll after startup.
 	var agentIP net.IP
 	if w.config.AgentRegistry != nil {
 		if a, ok := w.config.AgentRegistry.GetAgent(w.config.DefaultAgentID); ok {
@@ -117,39 +151,41 @@ func (w *Watcher) Sync() error {
 		}
 	}
 
-	// Count how many new ports need tunnels.
-	newPorts := 0
-	for port := range assignedPorts {
-		if _, alreadyExists := existing[port]; !alreadyExists {
-			newPorts++
+	pendingNew := 0
+	for pp := range wanted {
+		if _, alreadyExists := existing[pp]; !alreadyExists {
+			pendingNew++
 		}
 	}
-
-	if newPorts > 0 && agentIP == nil {
+	if pendingNew > 0 && agentIP == nil {
 		slog.Warn("pelican watcher: agent not registered yet, skipping tunnel creation",
-			"agent_id", w.config.DefaultAgentID, "pending_ports", newPorts)
+			"agent_id", w.config.DefaultAgentID, "pending_tunnels", pendingNew)
 	}
 
-	for port, alloc := range assignedPorts {
-		if _, alreadyExists := existing[port]; alreadyExists {
+	// Step 6: Create tunnels for newly desired (port, protocol) pairs.
+	// Dedup Track calls so we only call Gatestate once per (uuid, port) even
+	// when DualStack creates two tunnels.
+	trackedUP := make(map[uuidPort]bool)
+	for pp, alloc := range wanted {
+		if _, alreadyExists := existing[pp]; alreadyExists {
 			continue
 		}
-
 		if agentIP == nil {
 			continue // skip — will retry on the next sync cycle
 		}
 
 		srv := allocServerMap[alloc.ID]
-		proto := w.protocolFor(port)
 		allocID := alloc.ID
 		serverID := srv.ID
 
-		name := fmt.Sprintf("pelican-%d-%d", srv.ID, port)
+		// Tunnel name includes protocol so dual-stack pairs are
+		// distinguishable in logs and in /var/lib/gametunnel/state.json.
+		name := fmt.Sprintf("pelican-%d-%d-%s", srv.ID, pp.port, pp.protocol)
 		req := tunnel.CreateRequest{
 			Name:                name,
-			Protocol:            models.Protocol(proto),
-			PublicPort:          port,
-			LocalPort:           port,
+			Protocol:            pp.protocol,
+			PublicPort:          pp.port,
+			LocalPort:           pp.port,
 			AgentID:             w.config.DefaultAgentID,
 			AgentIP:             agentIP,
 			Source:              models.TunnelSourcePelican,
@@ -163,36 +199,67 @@ func (w *Watcher) Sync() error {
 
 		tun, err := w.tunnelMgr.Create(req)
 		if err != nil {
-			slog.Error("pelican watcher: create tunnel", "port", port, "error", err)
-		} else {
-			slog.Info("pelican watcher: created tunnel", "port", port, "alloc_id", allocID, "server_id", serverID, "server_uuid", srv.UUID)
-			if storeErr := w.store.SetTunnel(&tun); storeErr != nil {
-				slog.Error("pelican watcher: persist state after create", "port", port, "error", storeErr)
-			}
-			if w.config.GatestateTracker != nil && srv.UUID != "" {
-				w.config.GatestateTracker.Track(srv.UUID, port)
+			slog.Error("pelican watcher: create tunnel", "port", pp.port, "protocol", pp.protocol, "error", err)
+			continue
+		}
+		slog.Info("pelican watcher: created tunnel",
+			"port", pp.port, "protocol", pp.protocol,
+			"alloc_id", allocID, "server_id", serverID, "server_uuid", srv.UUID)
+		if storeErr := w.store.SetTunnel(&tun); storeErr != nil {
+			slog.Error("pelican watcher: persist state after create", "port", pp.port, "protocol", pp.protocol, "error", storeErr)
+		}
+		if w.config.GatestateTracker != nil && srv.UUID != "" {
+			key := uuidPort{srv.UUID, pp.port}
+			if !trackedUP[key] {
+				w.config.GatestateTracker.Track(srv.UUID, pp.port)
+				trackedUP[key] = true
 			}
 		}
 	}
 
-	// Step 6: Delete tunnels for ports that are no longer assigned.
-	for port, t := range existing {
-		if _, stillAssigned := assignedPorts[port]; !stillAssigned {
-			if w.config.GatestateTracker != nil && t.PelicanServerUUID != nil {
-				w.config.GatestateTracker.Untrack(*t.PelicanServerUUID, port)
+	// Step 7: Delete tunnels for (port, protocol) pairs that are no longer
+	// wanted. Dedup Untrack so each (uuid, port) only fires once even when
+	// both protocols are being torn down in the same Sync pass.
+	untrackedUP := make(map[uuidPort]bool)
+	for pp, t := range existing {
+		if _, stillWanted := wanted[pp]; stillWanted {
+			continue
+		}
+		if w.config.GatestateTracker != nil && t.PelicanServerUUID != nil {
+			key := uuidPort{*t.PelicanServerUUID, pp.port}
+			// Untrack only when no OTHER wanted entry references this
+			// (uuid, port). In single-protocol mode this is always true;
+			// in DualStack mode both entries get removed together so this
+			// is also true after the first iteration sets the dedup flag.
+			if !untrackedUP[key] && !portStillWanted(wanted, pp.port) {
+				w.config.GatestateTracker.Untrack(*t.PelicanServerUUID, pp.port)
+				untrackedUP[key] = true
 			}
-			if err := w.tunnelMgr.Delete(t.ID); err != nil {
-				slog.Error("pelican watcher: delete orphaned tunnel", "tunnel_id", t.ID, "port", port, "error", err)
-			} else {
-				slog.Info("pelican watcher: removed orphaned tunnel", "port", port)
-				if storeErr := w.store.DeleteTunnel(t.ID); storeErr != nil {
-					slog.Error("pelican watcher: persist state after delete", "port", port, "error", storeErr)
-				}
-			}
+		}
+		if err := w.tunnelMgr.Delete(t.ID); err != nil {
+			slog.Error("pelican watcher: delete orphaned tunnel", "tunnel_id", t.ID, "port", pp.port, "protocol", pp.protocol, "error", err)
+			continue
+		}
+		slog.Info("pelican watcher: removed orphaned tunnel", "port", pp.port, "protocol", pp.protocol)
+		if storeErr := w.store.DeleteTunnel(t.ID); storeErr != nil {
+			slog.Error("pelican watcher: persist state after delete", "port", pp.port, "protocol", pp.protocol, "error", storeErr)
 		}
 	}
 
 	return nil
+}
+
+// portStillWanted returns true if any entry in wanted targets the given port,
+// regardless of protocol. Used to gate Gatestate Untrack so the underlying
+// container's port stays in the nft set as long as at least one protocol is
+// still active.
+func portStillWanted(wanted map[portProto]Allocation, port int) bool {
+	for pp := range wanted {
+		if pp.port == port {
+			return true
+		}
+	}
+	return false
 }
 
 // protocolFor returns the protocol for a given port, consulting PortProtocols

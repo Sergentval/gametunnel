@@ -111,6 +111,13 @@ type PelicanSettings struct {
 	// ContainerGatedTunnels gates tunnel nft-set membership on container running state.
 	// When false (default), legacy behavior: allocation assigned → port in nft set.
 	ContainerGatedTunnels bool `yaml:"container_gated_tunnels"`
+	// DualStack, when true, creates both a TCP and a UDP tunnel for every
+	// Pelican allocation regardless of DefaultProtocol / PortProtocols. Use
+	// for mixed-protocol games (e.g. Dune: Awakening, which needs TCP for
+	// RabbitMQ and UDP for its UE5 server pool) so the operator does not
+	// have to enumerate every port. The unused protocol on a given port is
+	// harmless idle nft state.
+	DualStack bool `yaml:"dual_stack,omitempty"`
 }
 
 // ServerConfig is the top-level configuration for the tunnel server.
