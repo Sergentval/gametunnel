@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,27 @@ import (
 type ServerSettings struct {
 	APIListen string `yaml:"api_listen"`
 	StateFile string `yaml:"state_file"`
+}
+
+// APIPort returns the TCP port the control-plane API listens on, parsed from
+// APIListen (e.g. "0.0.0.0:8090" → 8090). It returns 0 when APIListen is
+// empty or unparseable, in which case no port is reserved from game-traffic
+// marking. This port MUST never be added to the nftables game_ports map: a
+// Pelican allocation colliding with it would otherwise divert the agent's own
+// control traffic into the (down) tunnel and break registration on reboot.
+func (s ServerSettings) APIPort() int {
+	if s.APIListen == "" {
+		return 0
+	}
+	_, portStr, err := net.SplitHostPort(s.APIListen)
+	if err != nil {
+		return 0
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return p
 }
 
 // AgentEntry defines a registered agent with its bearer token.
