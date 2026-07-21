@@ -15,18 +15,20 @@ import (
 // per-call mark argument to AddRule (stored as the value of the
 // `game_ports` port → mark map). The legacy `mark string` parameter on
 // this constructor is gone — callers pass the mark per port instead.
-func NewManager(conn *nftconn.Conn) (Manager, error) {
+// reservedPort is the control-plane API port; it is threaded to the backend so
+// AddRule never marks it as game traffic (0 reserves nothing).
+func NewManager(conn *nftconn.Conn, reservedPort int) (Manager, error) {
 	if conn != nil {
-		return NewNFTManager(conn), nil
+		return NewNFTManager(conn, reservedPort), nil
 	}
 
 	// Probe nftables availability.
 	c, err := nftconn.New()
 	if err == nil {
 		slog.Info("tproxy: using nftables backend")
-		return NewNFTManager(c), nil
+		return NewNFTManager(c, reservedPort), nil
 	}
 
 	slog.Warn("nftables not available, falling back to iptables", "error", err)
-	return newIPTablesManager()
+	return newIPTablesManager(reservedPort)
 }

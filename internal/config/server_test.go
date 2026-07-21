@@ -673,3 +673,25 @@ agents:
 		t.Errorf("flag-off load should succeed regardless of agent count: %v", err)
 	}
 }
+
+func TestServerSettings_APIPort(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"ipv4 host:port", "0.0.0.0:8090", 8090},
+		{"localhost", "127.0.0.1:8080", 8080},
+		{"empty", "", 0},
+		{"no port", "0.0.0.0", 0},
+		{"garbage", "not-a-listen-addr", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ServerSettings{APIListen: tc.in}.APIPort()
+			if got != tc.want {
+				t.Errorf("APIPort(%q) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}

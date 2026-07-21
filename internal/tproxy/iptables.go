@@ -2,6 +2,7 @@ package tproxy
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/coreos/go-iptables/iptables"
@@ -10,15 +11,19 @@ import (
 // iptablesManager is the legacy iptables-based manager (kept for fallback).
 type iptablesManager struct {
 	ipt *iptables.IPTables
+	// reservedPort is the control-plane API port; AddRule never marks it.
+	// See NewNFTManager for rationale. 0 = nothing reserved.
+	reservedPort int
 }
 
 // newIPTablesManager creates a TPROXY Manager backed by go-iptables.
-func newIPTablesManager() (Manager, error) {
+// reservedPort is the control-plane API port, never added to the mark rules.
+func newIPTablesManager(reservedPort int) (Manager, error) {
 	ipt, err := iptables.New()
 	if err != nil {
 		return nil, fmt.Errorf("create iptables client: %w", err)
 	}
-	return &iptablesManager{ipt: ipt}, nil
+	return &iptablesManager{ipt: ipt, reservedPort: reservedPort}, nil
 }
 
 // AddRule inserts MARK rules in the mangle PREROUTING chain for the given
@@ -26,6 +31,11 @@ func newIPTablesManager() (Manager, error) {
 // regardless of the protocol hint, because game servers commonly use both
 // (e.g. Minecraft=TCP, Steam games=UDP, some use both). Idempotent.
 func (m *iptablesManager) AddRule(_ string, port int, mark string) error {
+	if m.reservedPort != 0 && port == m.reservedPort {
+		slog.Warn("refusing to mark reserved control-plane port as game traffic",
+			"port", port)
+		return nil
+	}
 	portStr := strconv.Itoa(port)
 	for _, proto := range []string{"tcp", "udp"} {
 		rulespec := []string{

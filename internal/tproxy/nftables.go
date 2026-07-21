@@ -3,6 +3,7 @@ package tproxy
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,11 @@ type nftManager struct {
 	chain *nftables.Chain
 	set   *nftables.Set // nftables.Set with IsMap=true (map of port → mark)
 
+	// reservedPort is the control-plane API port. AddRule refuses to mark it
+	// as game traffic so a colliding Pelican allocation can never divert the
+	// agent's registration traffic into the tunnel. 0 = nothing reserved.
+	reservedPort int
+
 	// portsMu guards ports + ready. Hold portsMu BEFORE conn.Lock()
 	// when both are needed, to avoid deadlocks with other packages
 	// taking conn.Lock() first.
@@ -55,14 +61,17 @@ type nftManager struct {
 	ready   bool
 }
 
-// NewNFTManager creates a tproxy Manager backed by nftables.
+// NewNFTManager creates a tproxy Manager backed by nftables. reservedPort is
+// the control-plane API port, which AddRule will never add to the game_ports
+// map (pass 0 to reserve nothing).
 //
 // As of multi-agent plan 2 phase 3A, the per-call mark argument to
 // AddRule is honored — each port can be tagged with its own mark.
-func NewNFTManager(conn *nftconn.Conn) Manager {
+func NewNFTManager(conn *nftconn.Conn, reservedPort int) Manager {
 	return &nftManager{
-		conn:  conn,
-		ports: make(map[int]uint32),
+		conn:         conn,
+		reservedPort: reservedPort,
+		ports:        make(map[int]uint32),
 	}
 }
 
@@ -164,6 +173,17 @@ func (m *nftManager) ensureInfra() error {
 // If the port is already present with a different mark, the existing
 // element is replaced.
 func (m *nftManager) AddRule(_ string, port int, mark string) error {
+	if m.reservedPort != 0 && port == m.reservedPort {
+		// The control-plane API port must never be marked as game traffic.
+		// Marking it would divert inbound API/registration packets into the
+		// game routing table (and thus the tunnel), breaking agent
+		// registration — the exact failure that leaves the tunnel down after
+		// a reboot. Skip silently-successfully so callers (startup restore,
+		// Pelican watcher, gate-state) don't treat it as an error.
+		slog.Warn("refusing to mark reserved control-plane port as game traffic",
+			"port", port)
+		return nil
+	}
 	markVal, err := parseHexMark(mark)
 	if err != nil {
 		return fmt.Errorf("parse mark %q: %w", mark, err)

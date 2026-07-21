@@ -131,3 +131,18 @@ func addToMap(m *nftManager, port int, mark uint32) {
 	defer m.portsMu.Unlock()
 	m.ports[port] = mark
 }
+
+// TestAddRule_SkipsReservedPort verifies the control-plane API port is never
+// added to the game_ports map. The guard returns before any nftables access,
+// so a conn-less manager is sufficient here (regression for the reboot-time
+// registration hijack caused by an 8090 Pelican allocation colliding with the
+// 8090 API port).
+func TestAddRule_SkipsReservedPort(t *testing.T) {
+	m := &nftManager{reservedPort: 8090, ports: make(map[int]uint32)}
+	if err := m.AddRule("tcp", 8090, "0x1"); err != nil {
+		t.Fatalf("AddRule(reserved 8090) returned error: %v", err)
+	}
+	if _, present := m.ports[8090]; present {
+		t.Errorf("reserved port 8090 was added to the ports map; must be skipped")
+	}
+}
