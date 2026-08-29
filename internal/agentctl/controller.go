@@ -19,7 +19,18 @@ import (
 	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/gorilla/websocket"
-	"github.com/vishvananda/netlink"
+)
+
+const (
+	// replyMark is the connmark set on inbound game connections and restored
+	// onto reply packets leaving the container, so only game replies are
+	// routed back through the tunnel (container DNS, downloads etc. are not).
+	replyMark = 0x2
+	// replyMarkMask is the mask paired with replyMark in the ip rule.
+	replyMarkMask = 0x2
+	// replyRulePriority is the ip rule priority for the reply-path lookup.
+	// Below the local table so it only ever affects marked packets.
+	replyRulePriority = 199
 )
 
 // Controller manages the agent lifecycle: registration, heartbeating, and
@@ -471,6 +482,29 @@ func (c *Controller) syncTunnels(serverTunnels []models.Tunnel) {
 			delete(c.activeTunnels, id)
 		}
 	}
+
+	c.ensureReplyRouting()
+}
+
+// ensureReplyRouting re-asserts the fwmark → return-table policy rule that
+// sends marked game replies back through the tunnel.
+//
+// Called on every sync cycle rather than once at first-tunnel creation. The
+// rule is a single kernel object with no owner: a stray `ip rule del`, a
+// netns/network restart, or an unbalanced internal ref count silently removes
+// it, and the failure is invisible from the outside — inbound packets still
+// reach the container, DNAT still looks correct, but every reply leaves via
+// the default route with the wrong source address and players never see an
+// answer. Re-applying costs one idempotent netlink round-trip per cycle and
+// makes the agent self-healing, the same way DNAT is already retried above.
+func (c *Controller) ensureReplyRouting() {
+	if len(c.activeTunnels) == 0 {
+		return // nothing to route back
+	}
+	if err := c.routing.EnsureFwmarkRule(replyMark, replyMarkMask, c.returnTable, replyRulePriority); err != nil {
+		slog.Warn("ensure reply-path fwmark rule",
+			"mark", replyMark, "table", c.returnTable, "error", err)
+	}
 }
 
 // createTunnel sets up the return route via WireGuard (once), DNAT to the Docker
@@ -658,17 +692,8 @@ func (c *Controller) setupSharedConnmarkRouting() {
 		if err := c.nftAgent.setupConnmarkRestore(); err != nil {
 			slog.Warn("nftables connmark restore rule", "error", err)
 		}
-		// The fwmark policy routing rule is always via netlink (not iptables).
-		maskVal := uint32(0x2)
-		rule := netlink.NewRule()
-		rule.Mark = 0x2
-		rule.Mask = &maskVal
-		rule.Table = c.returnTable
-		rule.Priority = 199
-		_ = netlink.RuleDel(rule)
-		if err := netlink.RuleAdd(rule); err != nil {
-			slog.Warn("add fwmark rule for connmark routing", "error", err)
-		}
+		// The fwmark policy rule itself is (re-)asserted by ensureReplyRouting
+		// on every sync cycle, so it is deliberately not installed here.
 		return
 	}
 }
@@ -708,31 +733,17 @@ func (c *Controller) setupConnmarkRouting(t models.Tunnel) {
 		}
 	}
 
-	// Add fwmark rule: fwmark 0x2/0x2 → lookup return table.
-	maskVal := uint32(0x2)
-	rule := netlink.NewRule()
-	rule.Mark = 0x2
-	rule.Mask = &maskVal
-	rule.Table = c.returnTable
-	rule.Priority = 199
-
-	_ = netlink.RuleDel(rule) // idempotent
-	if err := netlink.RuleAdd(rule); err != nil {
-		slog.Warn("add fwmark rule for connmark routing", "error", err)
-	}
+	// The fwmark rule is asserted by ensureReplyRouting on every sync cycle,
+	// for both backends — deliberately not duplicated here.
 }
 
 // cleanupConnmarkRouting removes the connmark rules and fwmark-based policy
 // routing rule installed by setupConnmarkRouting.
 func (c *Controller) cleanupConnmarkRouting() {
-	// fwmark policy rule is always netlink-based, remove it regardless of backend.
-	maskVal := uint32(0x2)
-	fwRule := netlink.NewRule()
-	fwRule.Mark = 0x2
-	fwRule.Mask = &maskVal
-	fwRule.Table = c.returnTable
-	fwRule.Priority = 199
-	_ = netlink.RuleDel(fwRule)
+	// fwmark policy rule is netlink-based, remove it regardless of backend.
+	if err := c.routing.RemoveFwmarkRule(replyMark, replyMarkMask, c.returnTable, replyRulePriority); err != nil {
+		slog.Warn("remove reply-path fwmark rule", "table", c.returnTable, "error", err)
+	}
 
 	if c.nftAgent != nil {
 		// nftables rules are cleaned up by flushing the agent chains.

@@ -70,6 +70,54 @@ func (m *netlinkManager) AddSourceRule(table int, srcNet *net.IPNet) error {
 	return nil
 }
 
+// EnsureFwmarkRule installs a policy routing rule matching packets where
+// (skb_mark & mask) == mark and dispatching them to table at the given
+// priority. Delete-then-add, so it is idempotent and self-healing: calling it
+// on every sync cycle re-creates the rule if something removed it out of band.
+//
+// Unlike EnsureTPROXYRoutingMasked this touches only the one rule — it does
+// not reshuffle the local table, which is a server-side concern.
+func (m *netlinkManager) EnsureFwmarkRule(mark, mask uint32, table, priority int) error {
+	rule := fwmarkRule(mark, mask, table, priority)
+
+	if err := netlink.RuleDel(rule); err != nil && !isNotExist(err) {
+		return fmt.Errorf("remove stale fwmark rule (mark=0x%x mask=0x%x table=%d): %w",
+			mark, mask, table, err)
+	}
+	if err := netlink.RuleAdd(rule); err != nil {
+		return fmt.Errorf("add fwmark rule (mark=0x%x mask=0x%x table=%d): %w",
+			mark, mask, table, err)
+	}
+	return nil
+}
+
+// RemoveFwmarkRule deletes the rule installed by EnsureFwmarkRule.
+// Returns nil if the rule does not exist (idempotent).
+func (m *netlinkManager) RemoveFwmarkRule(mark, mask uint32, table, priority int) error {
+	rule := fwmarkRule(mark, mask, table, priority)
+
+	if err := netlink.RuleDel(rule); err != nil {
+		if isNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("remove fwmark rule (mark=0x%x mask=0x%x table=%d): %w",
+			mark, mask, table, err)
+	}
+	return nil
+}
+
+// fwmarkRule builds the netlink rule shared by EnsureFwmarkRule and
+// RemoveFwmarkRule so both always address the exact same kernel object.
+func fwmarkRule(mark, mask uint32, table, priority int) *netlink.Rule {
+	maskVal := mask
+	rule := netlink.NewRule()
+	rule.Mark = mark
+	rule.Mask = &maskVal
+	rule.Table = table
+	rule.Priority = priority
+	return rule
+}
+
 // RemoveSourceRule deletes the policy routing rule for srcNet → table.
 // Returns nil if the rule does not exist (idempotent).
 func (m *netlinkManager) RemoveSourceRule(table int, srcNet *net.IPNet) error {

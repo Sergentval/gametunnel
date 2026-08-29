@@ -37,8 +37,17 @@ func (m *mockWireGuard) Close() error                             { return nil }
 func (m *mockWireGuard) PublicKey() string                        { return m.publicKey }
 
 type mockRouting struct {
-	addCalled    int
-	removeCalled int
+	addCalled          int
+	removeCalled       int
+	ensureFwmarkCalls  []fwmarkCall
+	removeFwmarkCalled int
+}
+
+// fwmarkCall records the arguments of one EnsureFwmarkRule invocation so tests
+// can assert both how often the rule is re-applied and with which parameters.
+type fwmarkCall struct {
+	mark, mask      uint32
+	table, priority int
 }
 
 func (m *mockRouting) AddReturnRoute(table int, gateway net.IP, device string) error {
@@ -51,6 +60,14 @@ func (m *mockRouting) RemoveReturnRoute(table int) error {
 }
 func (m *mockRouting) AddSourceRule(table int, srcNet *net.IPNet) error    { return nil }
 func (m *mockRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error { return nil }
+func (m *mockRouting) EnsureFwmarkRule(mark, mask uint32, table, priority int) error {
+	m.ensureFwmarkCalls = append(m.ensureFwmarkCalls, fwmarkCall{mark, mask, table, priority})
+	return nil
+}
+func (m *mockRouting) RemoveFwmarkRule(mark, mask uint32, table, priority int) error {
+	m.removeFwmarkCalled++
+	return nil
+}
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 
@@ -83,6 +100,55 @@ func TestController_SyncTunnels_CreateNew(t *testing.T) {
 	}
 	if _, ok := ctrl.activeTunnels["t1"]; !ok {
 		t.Error("tunnel t1 should be in activeTunnels after create")
+	}
+}
+
+// Regression: the reply-path fwmark rule (fwmark 0x2 → return table) used to be
+// installed once, when connmarkRefCount went 0 → 1. If anything removed it out
+// of band the agent never put it back, and every game reply left through the
+// default route instead of the tunnel — inbound traffic reached the container
+// but players saw no answer. syncTunnels must re-assert it on every cycle.
+func TestController_SyncTunnels_ReappliesReplyRoutingEveryCycle(t *testing.T) {
+	rt := &mockRouting{}
+	wg := &mockWireGuard{publicKey: "agent-pub-key"}
+
+	ctrl := newTestController("http://unused", wg, rt)
+
+	tunnels := []models.Tunnel{
+		{ID: "t1", Name: "zomboid", Protocol: models.ProtocolUDP, PublicPort: 16261, Status: models.TunnelStatusActive},
+	}
+
+	// Three sync cycles with an unchanged tunnel list: the first creates the
+	// tunnel, the next two are steady-state polls.
+	ctrl.syncTunnels(tunnels)
+	ctrl.syncTunnels(tunnels)
+	ctrl.syncTunnels(tunnels)
+
+	if len(rt.ensureFwmarkCalls) != 3 {
+		t.Fatalf("EnsureFwmarkRule called %d times, want 3 (once per sync cycle)",
+			len(rt.ensureFwmarkCalls))
+	}
+	want := fwmarkCall{mark: replyMark, mask: replyMarkMask, table: 200, priority: replyRulePriority}
+	for i, got := range rt.ensureFwmarkCalls {
+		if got != want {
+			t.Errorf("call %d = %+v, want %+v", i, got, want)
+		}
+	}
+}
+
+// With no active tunnels there is nothing to route back, so the agent must not
+// keep re-adding the rule — otherwise a stopped server leaves routing state behind.
+func TestController_SyncTunnels_NoReplyRoutingWithoutTunnels(t *testing.T) {
+	rt := &mockRouting{}
+	wg := &mockWireGuard{publicKey: "agent-pub-key"}
+
+	ctrl := newTestController("http://unused", wg, rt)
+
+	ctrl.syncTunnels(nil)
+
+	if len(rt.ensureFwmarkCalls) != 0 {
+		t.Errorf("EnsureFwmarkRule called %d times with no active tunnels, want 0",
+			len(rt.ensureFwmarkCalls))
 	}
 }
 
