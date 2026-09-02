@@ -98,7 +98,7 @@ type WireGuardPeerConfig struct {
 
 // WSEvent represents a real-time tunnel event pushed over WebSocket.
 type WSEvent struct {
-	Type   string  `json:"type"`             // "tunnel_created", "tunnel_deleted", "full_sync"
+	Type   string  `json:"type"` // "tunnel_created", "tunnel_deleted", "full_sync"
 	Tunnel *Tunnel `json:"tunnel,omitempty"`
 }
 
@@ -142,7 +142,7 @@ func SanitizeGREName(name string) string {
 
 // ContainerStateUpdate is sent from agent → server on each docker state transition.
 type ContainerStateUpdate struct {
-	Type       string    `json:"type"`        // always "container.state_update"
+	Type       string    `json:"type"` // always "container.state_update"
 	AgentID    string    `json:"agent_id"`
 	ServerUUID string    `json:"server_uuid"` // Pelican server UUID
 	State      string    `json:"state"`       // "running" | "stopped" | "starting" | "stopping"
@@ -152,7 +152,7 @@ type ContainerStateUpdate struct {
 
 // ContainerSnapshot is sent from agent → server on (re)connect: full snapshot of known containers.
 type ContainerSnapshot struct {
-	Type       string                  `json:"type"`        // always "container.snapshot"
+	Type       string                  `json:"type"` // always "container.snapshot"
 	AgentID    string                  `json:"agent_id"`
 	Containers []ContainerSnapshotItem `json:"containers"`
 	SnapshotAt time.Time               `json:"snapshot_at"`

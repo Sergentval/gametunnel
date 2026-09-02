@@ -36,10 +36,10 @@ type mockRouting struct{}
 
 func (m *mockRouting) AddReturnRoute(table int, gateway net.IP, device string) error { return nil }
 func (m *mockRouting) RemoveReturnRoute(table int) error                             { return nil }
-func (m *mockRouting) AddSourceRule(table int, srcNet *net.IPNet) error               { return nil }
-func (m *mockRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error { return nil }
-func (m *mockRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error { return nil }
-func (m *mockRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error            { return nil }
+func (m *mockRouting) AddSourceRule(table int, srcNet *net.IPNet) error              { return nil }
+func (m *mockRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error                  { return nil }
+func (m *mockRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error                  { return nil }
+func (m *mockRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error           { return nil }
 
 var _ routing.Manager = (*mockRouting)(nil)
 
@@ -86,10 +86,10 @@ type fakeRouting struct{}
 
 func (f *fakeRouting) AddReturnRoute(table int, gateway net.IP, device string) error { return nil }
 func (f *fakeRouting) RemoveReturnRoute(table int) error                             { return nil }
-func (f *fakeRouting) AddSourceRule(table int, srcNet *net.IPNet) error               { return nil }
-func (f *fakeRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error { return nil }
-func (f *fakeRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error { return nil }
-func (f *fakeRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error            { return nil }
+func (f *fakeRouting) AddSourceRule(table int, srcNet *net.IPNet) error              { return nil }
+func (f *fakeRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error                  { return nil }
+func (f *fakeRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error                  { return nil }
+func (f *fakeRouting) RemoveSourceRule(table int, srcNet *net.IPNet) error           { return nil }
 
 // ── tests ────────────────────────────────────────────────────────────────────
 

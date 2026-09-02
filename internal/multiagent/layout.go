@@ -23,14 +23,14 @@ var ifaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 type Layout struct {
 	AgentID      string
 	AgentIndex   int
-	Interface    string // e.g. "wg-home1"
-	ListenPort   int    // base + index
+	Interface    string     // e.g. "wg-home1"
+	ListenPort   int        // base + index
 	Subnet       *net.IPNet // /30 within base subnet
-	ServerIP     net.IP // .1 of the /30
-	AgentIP      net.IP // .2 of the /30
-	FwMark       uint32 // 0x10 + (index<<4) — 0x10, 0x20, …
-	FwMarkMask   uint32 // 0xF0
-	RoutingTable int    // 100 + index
+	ServerIP     net.IP     // .1 of the /30
+	AgentIP      net.IP     // .2 of the /30
+	FwMark       uint32     // 0x10 + (index<<4) — 0x10, 0x20, …
+	FwMarkMask   uint32     // 0xF0
+	RoutingTable int        // 100 + index
 }
 
 // Compute derives a Layout from the given agent ID + index + base config.

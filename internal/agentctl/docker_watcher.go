@@ -130,4 +130,3 @@ func (w *DockerWatcher) Snapshot(ctx context.Context) (models.ContainerSnapshot,
 	}
 	return out, nil
 }
-

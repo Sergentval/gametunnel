@@ -11,10 +11,10 @@ import (
 
 // AgentSettings holds the core identity and connectivity settings for the agent.
 type AgentSettings struct {
-	ID                      string `yaml:"id"`
-	ServerURL               string `yaml:"server_url"`
-	Token                   string `yaml:"token"`
-	HeartbeatIntervalSeconds int   `yaml:"heartbeat_interval_seconds"`
+	ID                       string `yaml:"id"`
+	ServerURL                string `yaml:"server_url"`
+	Token                    string `yaml:"token"`
+	HeartbeatIntervalSeconds int    `yaml:"heartbeat_interval_seconds"`
 }
 
 // AgentWireGuardSettings holds WireGuard configuration for the agent side.

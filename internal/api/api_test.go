@@ -24,35 +24,35 @@ type mockWG struct {
 	pubKey string
 }
 
-func (m *mockWG) Setup(_ string, _ string, _ int, _ string, _ ...int) error { return nil }
-func (m *mockWG) SetAddress(_ string, _ string) error                        { return nil }
+func (m *mockWG) Setup(_ string, _ string, _ int, _ string, _ ...int) error   { return nil }
+func (m *mockWG) SetAddress(_ string, _ string) error                         { return nil }
 func (m *mockWG) AddPeer(_ string, _ models.WireGuardPeerConfig, _ int) error { return nil }
-func (m *mockWG) RemovePeer(_ string, _ string) error                        { return nil }
-func (m *mockWG) Close() error                                               { return nil }
-func (m *mockWG) PublicKey() string                                          { return m.pubKey }
+func (m *mockWG) RemovePeer(_ string, _ string) error                         { return nil }
+func (m *mockWG) Close() error                                                { return nil }
+func (m *mockWG) PublicKey() string                                           { return m.pubKey }
 
 type mockTPROXY struct{}
 
-func (m *mockTPROXY) AddRule(_ string, _ int, _ string) error           { return nil }
-func (m *mockTPROXY) RemoveRule(_ string, _ int, _ string) error        { return nil }
-func (m *mockTPROXY) EnsurePolicyRouting(_ string, _ int) error         { return nil }
-func (m *mockTPROXY) CleanupPolicyRouting(_ string, _ int) error        { return nil }
+func (m *mockTPROXY) AddRule(_ string, _ int, _ string) error    { return nil }
+func (m *mockTPROXY) RemoveRule(_ string, _ int, _ string) error { return nil }
+func (m *mockTPROXY) EnsurePolicyRouting(_ string, _ int) error  { return nil }
+func (m *mockTPROXY) CleanupPolicyRouting(_ string, _ int) error { return nil }
 
 type mockRouting struct{}
 
-func (m *mockRouting) AddReturnRoute(_ int, _ net.IP, _ string) error   { return nil }
-func (m *mockRouting) RemoveReturnRoute(_ int) error                    { return nil }
-func (m *mockRouting) AddSourceRule(_ int, _ *net.IPNet) error          { return nil }
-func (m *mockRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error { return nil }
-func (m *mockRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error { return nil }
-func (m *mockRouting) RemoveSourceRule(_ int, _ *net.IPNet) error       { return nil }
+func (m *mockRouting) AddReturnRoute(_ int, _ net.IP, _ string) error { return nil }
+func (m *mockRouting) RemoveReturnRoute(_ int) error                  { return nil }
+func (m *mockRouting) AddSourceRule(_ int, _ *net.IPNet) error        { return nil }
+func (m *mockRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error   { return nil }
+func (m *mockRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error   { return nil }
+func (m *mockRouting) RemoveSourceRule(_ int, _ *net.IPNet) error     { return nil }
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
 type testEnv struct {
-	server   *httptest.Server
-	token    string
-	agentID  string
+	server  *httptest.Server
+	token   string
+	agentID string
 }
 
 func setupTestAPI(t *testing.T) *testEnv {

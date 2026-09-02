@@ -59,8 +59,8 @@ type mockRouting struct{}
 func (m *mockRouting) AddReturnRoute(_ int, _ net.IP, _ string) error { return nil }
 func (m *mockRouting) RemoveReturnRoute(_ int) error                  { return nil }
 func (m *mockRouting) AddSourceRule(_ int, _ *net.IPNet) error        { return nil }
-func (m *mockRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error { return nil }
-func (m *mockRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error { return nil }
+func (m *mockRouting) EnsureFwmarkRule(_, _ uint32, _, _ int) error   { return nil }
+func (m *mockRouting) RemoveFwmarkRule(_, _ uint32, _, _ int) error   { return nil }
 func (m *mockRouting) RemoveSourceRule(_ int, _ *net.IPNet) error     { return nil }
 
 // ── mock AgentIPResolver ────────────────────────────────────────────────────

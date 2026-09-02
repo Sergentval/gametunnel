@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/models"
-	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/netutil"
+	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/routing"
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/docker/docker/api/types/container"
@@ -54,12 +54,12 @@ type Controller struct {
 
 	nftAgent *nftAgent // nil when using iptables fallback
 
-	activeTunnels       map[string]models.Tunnel
-	containerIPs        map[string]string // tunnel ID → container IP
-	routeRefCount       int
-	connmarkRefCount    int // ref count for connmark-based reply routing
-	stopCh              chan struct{}
-	loopWg              sync.WaitGroup
+	activeTunnels    map[string]models.Tunnel
+	containerIPs     map[string]string // tunnel ID → container IP
+	routeRefCount    int
+	connmarkRefCount int // ref count for connmark-based reply routing
+	stopCh           chan struct{}
+	loopWg           sync.WaitGroup
 
 	// snapshotFn, if set, is invoked on WS connect and on agent.request_snapshot
 	// to produce a ContainerSnapshot sent to the server. Nil is valid — no

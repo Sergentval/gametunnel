@@ -10,3 +10,4 @@ gametunnel-agent
 server.yaml
 agent.yaml
 state.json
+/gametunnel

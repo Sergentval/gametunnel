@@ -13,10 +13,10 @@ import "github.com/Sergentval/gametunnel/internal/models"
 type EventKind int
 
 const (
-	EvStateUpdate   EventKind = iota // agent-reported container state
-	EvSuspend                        // panel: server suspended
-	EvUnsuspend                      // panel: server unsuspended
-	EvDebounceFire                   // debouncer timer expired
+	EvStateUpdate  EventKind = iota // agent-reported container state
+	EvSuspend                       // panel: server suspended
+	EvUnsuspend                     // panel: server unsuspended
+	EvDebounceFire                  // debouncer timer expired
 )
 
 // Event is the input to the state machine.

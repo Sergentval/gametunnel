@@ -11,8 +11,8 @@ import (
 // ── mock WireGuard ────────────────────────────────────────────────────────────
 
 type mockWG struct {
-	peers           map[string]bool            // pubkey → present (legacy flat view)
-	peersByIface    map[string]map[string]bool // iface → pubkey → present
+	peers        map[string]bool            // pubkey → present (legacy flat view)
+	peersByIface map[string]map[string]bool // iface → pubkey → present
 }
 
 func newMockWG() *mockWG {

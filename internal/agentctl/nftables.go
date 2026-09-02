@@ -4,18 +4,18 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/Sergentval/gametunnel/internal/models"
+	"github.com/Sergentval/gametunnel/internal/nftconn"
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
 	"golang.org/x/sys/unix"
 )
 
 const (
-	agentNATChainName      = "agent_dnat"
-	agentPostChainName     = "agent_postrouting"
-	agentForwardChainName  = "agent_forward"
-	agentMangleChainName   = "agent_mangle"
+	agentNATChainName     = "agent_dnat"
+	agentPostChainName    = "agent_postrouting"
+	agentForwardChainName = "agent_forward"
+	agentMangleChainName  = "agent_mangle"
 )
 
 // nftAgent manages agent-side nftables rules (DNAT, FORWARD, connmark).
