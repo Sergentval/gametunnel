@@ -92,7 +92,32 @@ func TestConstants(t *testing.T) {
 	if BannedSetName != "banned" {
 		t.Errorf("BannedSetName = %q, want banned", BannedSetName)
 	}
+	if ConnLimitSetName != "conn_limit_game" {
+		t.Errorf("ConnLimitSetName = %q, want conn_limit_game", ConnLimitSetName)
+	}
 	if RateLimitSetName != "rate_limit_game" {
 		t.Errorf("RateLimitSetName = %q, want rate_limit_game", RateLimitSetName)
+	}
+}
+
+func TestInternalSourcePrefixesAreValid(t *testing.T) {
+	// matchSaddrPrefix panics on a bad prefix; building the rules once
+	// catches a typo in internalSourcePrefixes at test time, not at startup.
+	rules := internalSourceRules()
+	if want := 1 + len(internalSourcePrefixes); len(rules) != want {
+		t.Fatalf("internalSourceRules() = %d rules, want %d (lo + each prefix)", len(rules), want)
+	}
+}
+
+func TestMatchSaddrPrefix_RejectsInvalid(t *testing.T) {
+	for _, cidr := range []string{"not-a-cidr", "2001:db8::/32"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("matchSaddrPrefix(%q) did not panic", cidr)
+				}
+			}()
+			matchSaddrPrefix(cidr)
+		}()
 	}
 }

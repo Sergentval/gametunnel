@@ -2,9 +2,9 @@
 // VPS from DDoS, UDP floods, and connection-storm attacks targeting the game
 // ports forwarded by GameTunnel.
 //
-// The chain hooks into prerouting at priority raw-10 (-310) so it runs before
-// the mark chain (priority mangle = -150). Bad traffic is dropped before any
-// forwarding decision is made.
+// The chain hooks into prerouting at priority -175: after conntrack (-200) so
+// `ct state` is meaningful, and before the mark chain (mangle = -150) so bad
+// traffic is dropped before any forwarding decision is made.
 //
 // Rules installed on the prerouting hook (in order):
 //
@@ -14,21 +14,28 @@
 //     connections we initiated (CDN downloads, apt, docker, game server
 //     queries) bypasses the rate/conn limits so they don't throttle legit
 //     traffic at ~290 KB/s per remote endpoint.
-//  3. Accept traffic to exempt control-plane dports (SSH, panel API, WG).
-//  4. Drop packets whose source IP exceeds NewConnRatePerSec per second
+//  3. Accept host-internal traffic: anything arriving on loopback, and
+//     anything from a private / CGNAT source (Docker bridges, WireGuard,
+//     Tailscale). Prerouting sees ALL of it, and none of it is an attack
+//     from the internet.
+//  4. Accept traffic to exempt control-plane dports (SSH, panel API, WG).
+//  5. Drop packets whose source IP exceeds NewConnRatePerSec per second
 //     (burst = 2x rate). Uses a dynamic set keyed on ip saddr with an
 //     embedded limit expression. Applies only to NEW inbound connections
 //     (established are accepted above).
-//  5. Drop new connections when the source IP has more than ConcurrentPerIP
-//     concurrent tracked flows (requires kernel 4.10+ for connlimit).
+//  6. Drop new connections when the source IP already holds more than
+//     ConcurrentPerIP tracked flows. Uses a dynamic set keyed on ip saddr
+//     with an embedded connlimit, so each source has its own counter.
 //
 // The security chain is intentionally protocol-agnostic: it covers both TCP
 // and UDP game traffic as well as WireGuard's UDP transport. Only new
-// inbound connections are subject to the per-source thresholds.
+// inbound connections from external sources are subject to the per-source
+// thresholds.
 package security
 
 import (
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/Sergentval/gametunnel/internal/nftconn"
@@ -45,10 +52,25 @@ const (
 	// RateLimitSetName is the named dynamic set that tracks per-source-IP
 	// new-connection rate.
 	RateLimitSetName = "rate_limit_game"
+	// ConnLimitSetName is the named dynamic set that tracks per-source-IP
+	// concurrent flows.
+	ConnLimitSetName = "conn_limit_game"
 	// BannedSetName is the named set of IPs that are dropped unconditionally.
 	// Operators can populate this manually or via fail2ban.
 	BannedSetName = "banned"
 )
+
+// internalSourcePrefixes are source ranges that never come from an internet
+// player: Docker bridges and WireGuard tunnels (RFC 1918) and Tailscale
+// (CGNAT 100.64/10). Without this exemption, the host's own resolver traffic
+// and every container shared the per-source thresholds with game traffic —
+// on 2026-10-16 that dropped DNS for the whole VPS for hours.
+var internalSourcePrefixes = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10",
+}
 
 // Config holds security tuning knobs.
 type Config struct {
@@ -93,6 +115,7 @@ type Manager struct {
 	cfg    Config
 	chain  *nftables.Chain
 	rlSet  *nftables.Set
+	clSet  *nftables.Set
 	banSet *nftables.Set
 	ready  bool
 }
@@ -146,15 +169,32 @@ func (m *Manager) Setup() error {
 	})
 
 	// On re-entry (m.ready == true), flush rules but keep the named sets.
-	// nftables' AddSet on an existing set returns "already exists", so sets
-	// are created only on the first Setup call. The set objects themselves
-	// are re-constructed every call so the rules below can reference them.
 	if m.ready {
 		nft.FlushChain(m.chain)
 	}
+	if err := m.ensureSets(nft, table); err != nil {
+		return err
+	}
 
-	// Named set: rate_limit_game — keyed on ipv4 saddr, dynamic, 1-minute
-	// timeout. The kernel populates and expires entries automatically.
+	for _, exprs := range m.ruleExprs() {
+		nft.AddRule(&nftables.Rule{Table: table, Chain: m.chain, Exprs: exprs})
+	}
+
+	if err := nft.Flush(); err != nil {
+		return fmt.Errorf("flush nftables security chain: %w", err)
+	}
+
+	m.ready = true
+	return nil
+}
+
+// ensureSets builds the named sets the rules reference. nftables' AddSet on
+// an existing set returns "already exists", so sets are created only on the
+// first Setup call; the set objects are re-constructed every call so the
+// rules can reference them.
+func (m *Manager) ensureSets(nft *nftables.Conn, table *nftables.Table) error {
+	// rate_limit_game — dynamic, 1-minute timeout; the kernel populates and
+	// expires entries automatically.
 	m.rlSet = &nftables.Set{
 		Table:      table,
 		Name:       RateLimitSetName,
@@ -163,91 +203,81 @@ func (m *Manager) Setup() error {
 		HasTimeout: true,
 		Timeout:    time.Minute,
 	}
-	if !m.ready {
-		if err := nft.AddSet(m.rlSet, nil); err != nil {
-			return fmt.Errorf("create rate-limit set: %w", err)
-		}
+	// conn_limit_game — dynamic, no timeout: the kernel garbage-collects an
+	// element once its connlimit count drops to zero.
+	m.clSet = &nftables.Set{
+		Table:   table,
+		Name:    ConnLimitSetName,
+		KeyType: nftables.TypeIPAddr,
+		Dynamic: true,
 	}
-
-	// Named set: banned — keyed on ipv4 saddr, static (no dynamic/timeout).
-	// Operators populate this manually via `nft add element`.
+	// banned — static; operators populate it via `nft add element`.
 	m.banSet = &nftables.Set{
 		Table:   table,
 		Name:    BannedSetName,
 		KeyType: nftables.TypeIPAddr,
 	}
-	if !m.ready {
-		if err := nft.AddSet(m.banSet, nil); err != nil {
-			return fmt.Errorf("create banned set: %w", err)
+	if m.ready {
+		return nil
+	}
+	for _, set := range []*nftables.Set{m.rlSet, m.clSet, m.banSet} {
+		if err := nft.AddSet(set, nil); err != nil {
+			return fmt.Errorf("create %s set: %w", set.Name, err)
 		}
 	}
+	return nil
+}
 
-	// ── Rule 1: ip saddr @banned -> drop ────────────────────────────────
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: m.chain,
-		Exprs: append(loadSaddrExprs(),
-			&expr.Lookup{
-				SourceRegister: 1,
-				SetName:        BannedSetName,
-				SetID:          m.banSet.ID,
-			},
+// ruleExprs returns the chain's rules in evaluation order. Sets must already
+// be built by ensureSets.
+func (m *Manager) ruleExprs() [][]expr.Any {
+	rules := [][]expr.Any{
+		// ip saddr @banned drop
+		append(loadSaddrExprs(),
+			&expr.Lookup{SourceRegister: 1, SetName: BannedSetName, SetID: m.banSet.ID},
 			&expr.Verdict{Kind: expr.VerdictDrop},
 		),
-	})
-
-	// ── Rule 1a: accept established / related connections ──────────────
-	// Standard firewall pattern: return traffic for outbound connections
-	// we initiated (HTTPS to CDNs, apt updates, docker pulls, game server
-	// outbound queries) arrives at prerouting with ct state ESTABLISHED.
-	// Without this, the rate-limit below treats each remote CDN IP as a
-	// "source" and throttles legitimate return traffic to 200 pps per IP,
-	// capping our outbound download speed at ~290 KB/s per remote endpoint.
-	//
-	// Only genuinely NEW inbound connections should be subject to the
-	// rate-limit and connlimit rules — that's where actual abuse lives.
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: m.chain,
-		Exprs: []expr.Any{
-			&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
-			&expr.Bitwise{
-				SourceRegister: 1,
-				DestRegister:   1,
-				Len:            4,
-				Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
-				Xor:            binaryutil.NativeEndian.PutUint32(0),
-			},
-			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
+		// ct state established,related accept — only genuinely NEW inbound
+		// connections are subject to the limits below.
+		append(ctStateExprs(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
 			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
+		),
+	}
+	rules = append(rules, internalSourceRules()...)
 
-	// ── Rule 1b: accept traffic to exempt (control-plane) ports ─────────
-	// Must run AFTER the banned check (so banned IPs still get dropped on
-	// every port) and BEFORE the rate/conn limits (so control-plane traffic
-	// isn't subject to per-IP game-traffic thresholds).
-	//
-	// Emits one rule per port rather than using a set — the list is short
-	// and static, and avoids requiring an additional named set.
+	// Control-plane ports: after the banned check (banned IPs are dropped on
+	// every port) and before the per-source thresholds.
 	for _, port := range m.cfg.ExemptPorts {
 		if port <= 0 || port > 0xFFFF {
 			continue
 		}
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: m.chain,
-			Exprs: append(nftconn.MatchDport(uint16(port)),
-				&expr.Verdict{Kind: expr.VerdictAccept},
-			),
-		})
+		rules = append(rules, append(nftconn.MatchDport(uint16(port)),
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		))
 	}
 
-	// ── Rule 2: per-source rate limit ───────────────────────────────────
-	// update @rate_limit_game { ip saddr limit rate over <R>/second burst <2R> } drop
-	rate := uint64(m.cfg.NewConnRatePerSec)
-	burst := uint32(2 * m.cfg.NewConnRatePerSec)
-	rateLimitRule := append(loadSaddrExprs(),
+	return append(rules, m.rateLimitRule(), m.connLimitRule())
+}
+
+// internalSourceRules accepts traffic that cannot come from an internet
+// player: everything arriving on loopback (the host talking to itself, e.g.
+// Docker's resolver querying the 127.0.0.53 stub), and private / CGNAT
+// sources (containers, tunnels).
+func internalSourceRules() [][]expr.Any {
+	rules := [][]expr.Any{
+		append(nftconn.MatchIIFName("lo"), &expr.Verdict{Kind: expr.VerdictAccept}),
+	}
+	for _, cidr := range internalSourcePrefixes {
+		rules = append(rules, append(matchSaddrPrefix(cidr),
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		))
+	}
+	return rules
+}
+
+// rateLimitRule: update @rate_limit_game { ip saddr limit rate over <R>/second burst <2R> } drop
+func (m *Manager) rateLimitRule() []expr.Any {
+	return append(loadSaddrExprs(),
 		&expr.Dynset{
 			SrcRegKey: 1,
 			SetName:   RateLimitSetName,
@@ -257,58 +287,40 @@ func (m *Manager) Setup() error {
 			Exprs: []expr.Any{
 				&expr.Limit{
 					Type:  expr.LimitTypePkts,
-					Rate:  rate,
+					Rate:  uint64(m.cfg.NewConnRatePerSec),
 					Unit:  expr.LimitTimeSecond,
-					Burst: burst,
+					Burst: uint32(2 * m.cfg.NewConnRatePerSec),
 					Over:  true, // match when the rate is EXCEEDED
 				},
 			},
 		},
 		&expr.Verdict{Kind: expr.VerdictDrop},
 	)
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: m.chain,
-		Exprs: rateLimitRule,
-	})
+}
 
-	// ── Rule 3: concurrent-connection limit ─────────────────────────────
-	// ct state new ct count over <N> drop
-	//
-	// Only new connections are counted against connlimit so established
-	// flows don't falsely register as "new".
-	connLimitRule := []expr.Any{
-		// Load ct state
-		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
-		// Mask with NEW bit
-		&expr.Bitwise{
-			SourceRegister: 1,
-			DestRegister:   1,
-			Len:            4,
-			Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-			Xor:            binaryutil.NativeEndian.PutUint32(0),
-		},
-		// Must be non-zero (i.e. NEW is set)
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
-		// connlimit over N — flags bit 0 is "inverse" (match when OVER)
-		&expr.Connlimit{
-			Count: uint32(m.cfg.ConcurrentPerIP),
-			Flags: expr.NFT_CONNLIMIT_F_INV,
+// connLimitRule: ct state new add @conn_limit_game { ip saddr ct count over <N> } drop
+//
+// The connlimit lives inside the set element, so each source IP has its own
+// counter. A bare `ct count over N` would count every new flow through the
+// chain against ONE shared counter.
+func (m *Manager) connLimitRule() []expr.Any {
+	exprs := ctStateExprs(expr.CtStateBitNEW)
+	exprs = append(exprs, loadSaddrExprs()...)
+	return append(exprs,
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   ConnLimitSetName,
+			SetID:     m.clSet.ID,
+			Operation: uint32(unix.NFT_DYNSET_OP_ADD),
+			Exprs: []expr.Any{
+				&expr.Connlimit{
+					Count: uint32(m.cfg.ConcurrentPerIP),
+					Flags: expr.NFT_CONNLIMIT_F_INV, // match when OVER
+				},
+			},
 		},
 		&expr.Verdict{Kind: expr.VerdictDrop},
-	}
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: m.chain,
-		Exprs: connLimitRule,
-	})
-
-	if err := nft.Flush(); err != nil {
-		return fmt.Errorf("flush nftables security chain: %w", err)
-	}
-
-	m.ready = true
-	return nil
+	)
 }
 
 // Cleanup flushes the security chain. The chain itself is left in place —
@@ -325,6 +337,40 @@ func (m *Manager) Cleanup() error {
 		return fmt.Errorf("flush security chain during cleanup: %w", err)
 	}
 	return nil
+}
+
+// ctStateExprs matches when the conntrack state has any of the given bits.
+func ctStateExprs(bits uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(bits),
+			Xor:            binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
+	}
+}
+
+// matchSaddrPrefix matches ip saddr against an IPv4 CIDR. It panics on an
+// invalid CIDR: the only callers pass compile-time constants.
+func matchSaddrPrefix(cidr string) []expr.Any {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil || network.IP.To4() == nil {
+		panic(fmt.Sprintf("security: invalid IPv4 prefix %q", cidr))
+	}
+	return append(loadSaddrExprs(),
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           []byte(network.Mask),
+			Xor:            []byte{0, 0, 0, 0},
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(network.IP.To4())},
+	)
 }
 
 // loadSaddrExprs returns expressions that load ip saddr (4 bytes at offset 12

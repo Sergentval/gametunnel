@@ -13,6 +13,23 @@ across the WireGuard tunnel to the backend.
 | Connection exhaustion / slow-loris    | Per-source-IP concurrent-flow cap (`connection_limit`) |
 | Known-bad IPs (scanners, booters)     | `banned` named set — drop on sight            |
 
+### What is never limited
+
+Prerouting sees **every** packet the host receives, not only game traffic:
+the host talking to itself over loopback (e.g. Docker's embedded resolver
+querying the `127.0.0.53` stub), containers on Docker bridges, WireGuard and
+Tailscale peers. The chain accepts all of it before the thresholds:
+
+- `iifname "lo" accept`
+- `ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } accept`
+
+Both thresholds are **per source IP** (dynamic sets keyed on `ip saddr`).
+Until 2026-10-16 the connection cap was a bare `ct count over N`: one
+counter shared by every new flow through the chain, loopback included. Once
+the host held more than `connection_limit` flows, new connections — local
+DNS first — were dropped, and every container lost name resolution for
+minutes at a time.
+
 The chain hooks into `prerouting` at priority `-175`. The priority is chosen
 carefully to sit between two kernel hooks:
 
@@ -200,7 +217,8 @@ continues without protection. Upgrade the host kernel or set
 
 **Legitimate players getting dropped** — raise `rate_limit_per_sec` and/or
 `connection_limit`. Inspect `sudo nft list set ip gametunnel rate_limit_game`
-to see whose counter is hot.
+to see whose counter is hot, and `sudo nft list set ip gametunnel
+conn_limit_game` for per-source concurrent flows.
 
 **Security chain missing after restart** — check journal for
 `security layer setup failed`. The most common cause is the nftables
